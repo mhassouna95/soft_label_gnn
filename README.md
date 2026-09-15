@@ -78,7 +78,12 @@ modern stack (verified on NumPy 2.3.5 / scikit-learn 1.9), so either works.
 │   ├── best_model/                   # Released model: Lightning checkpoint + architecture
 │   │   ├── best_model.ckpt
 │   │   └── config.json
-│   └── scaler_all.pkl                # Feature scaler for subset=True agents
+│   ├── scaler_all.pkl                # Feature scaler for the GNN node features
+│   └── scaler_all.npz                # Same scaler as plain arrays (mean, scale, var)
+├── app/                              # InteractiveAI recommendation API
+│   ├── main.py                       # FastAPI service
+│   ├── formatting.py                 # Action -> InteractiveAI recommendation payload
+│   └── sample_request.json           # Example request (ai4realnet_small observation)
 ├── gnn/
 │   ├── gnn_models.py                 # GAT and GraphTransformer as LightningModules
 │   ├── obs_converter.py              # Grid2Op observation -> PyG graph features
@@ -90,12 +95,16 @@ modern stack (verified on NumPy 2.3.5 / scikit-learn 1.9), so either works.
 │   └── utilities.py                  # Simulation / action helpers
 ├── notebooks/                        # Result analysis
 ├── GNNAgent.py                       # The SoftGNN agent
-├── Data_Processing.ipynb             # Stage 3: collected data -> processed PyG graphs
-├── soft_target_optuna_distributed.py # Stage 4: Optuna + Lightning hyperparameter search
-├── train.py                          # Stage 4b: train a single model from a saved config
-├── get_seed_gnn_array.py             # Stage 5: 20-seed evaluation of the GNN agent
-├── get_seed_greedy_array.py          # Stage 5: 20-seed evaluation of the greedy expert
-└── requirements.txt
+├── Data_Processing.ipynb             # Stage 2: collected data -> processed PyG graphs
+├── soft_target_optuna_distributed.py # Stage 3: Optuna + Lightning hyperparameter search
+├── train.py                          # Stage 3: train a single model from a saved config
+├── get_seed_gnn_array.py             # Stage 4: 20-seed evaluation of the GNN agent
+├── get_seed_greedy_array.py          # Stage 4: 20-seed evaluation of the greedy expert
+├── Dockerfile                        # Container image of the InteractiveAI API
+├── docker-compose.yml                # Runs the API image (reads .env)
+├── .env.example                      # Template for .env (API token, port)
+├── requirements.txt                  # Research pipeline (training, evaluation)
+└── requirements_docker.txt           # InteractiveAI API (Python 3.12)
 ```
 
 > **Note:** SLURM launcher scripts are intentionally not tracked (`*.sh` is gitignored),
@@ -206,6 +215,111 @@ while not done:
 
 `GNNAgent` also tracks how many action simulations it performs per step;
 `agent.save_simulation_counts(path)` writes those counters to an `.npz` file.
+
+---
+
+## 🔌 InteractiveAI Integration
+
+`app/` exposes the agent as the recommendation service
+[InteractiveAI](https://github.com/AI4REALNET) calls, following the AI4REALNET AI agent template.
+InteractiveAI sends the grid observation of a critical event and gets back actions to show the
+operator.
+
+### How recommendations are chosen
+
+The API calls `GNNAgent.recommend()`, which runs the agent's normal search:
+
+1. The GNN ranks all 2000 actions for the observation.
+2. Actions are simulated in ranking order, up to `MAX_ACTION_SIM` (2000), until one brings the
+   maximum line loading (rho) to `BEST_ACTION_THRESHOLD` (0.95) or below. This first action is
+   exactly the one the standalone agent would apply.
+3. The search then continues for at most `EXTRA_SIMULATION_BUDGET` (300) further simulations to
+   find more such actions, up to `N_RECOMMENDATIONS` (3) in total.
+
+If no action reaches the threshold, the actions that lower rho the most are proposed instead. When
+the grid is already below the threshold, the single action the agent would take is returned.
+
+### Run with Docker
+
+```bash
+cp .env.example .env          # set API_TOKEN, e.g. to the output of: openssl rand -hex 32
+docker compose up --build
+```
+
+The API is published on `http://localhost:5124` (change `AGENT_PORT` in `.env`). The first start
+takes a minute or two while the environment and model load; `GET /health` answers once the service
+is ready.
+
+The image is built for `linux/amd64`, because `lightsim2grid` has no Linux arm64 wheels. On an Apple
+Silicon Mac it runs under emulation, which is slower; run without Docker there for faster responses.
+
+### Run without Docker
+
+Python 3.12, from the repository root:
+
+```bash
+pip install --index-url https://download.pytorch.org/whl/cpu torch==2.12.1   # optional: CPU-only torch
+pip install -r requirements_docker.txt
+
+git clone https://github.com/AI4REALNET/grid2op-scenario.git ../grid2op-scenario
+
+API_TOKEN=<token> GRID2OP_ENV=../grid2op-scenario/ai4realnet_small \
+    uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
+
+### Request recommendations
+
+```bash
+curl -X POST http://localhost:5124/api/v1/recommendation \
+    -H "Content-Type: application/json" \
+    -H "Authorization: Bearer $API_TOKEN" \
+    --data @app/sample_request.json
+```
+
+The request body carries the observation, as serialized by Grid2Op's `observation.to_json()`, in
+`context.observation`. `event` and `cognitive_snapshot` are accepted but not used by the agent.
+`app/sample_request.json` is the example request from ExpertAgent's integration and matches the
+`ai4realnet_small` grid.
+
+The response is a list with one entry per recommended action:
+
+```json
+[
+  {
+    "title": "Topological recommendation: Schematic acquisition at substation 33",
+    "description": "Assign bus 1 to line (extremity) id 48, Assign bus 1 to line (extremity) id 49, ...",
+    "use_case": "PowerGrid",
+    "agent_type": 2,
+    "actions": [{"_set_topo_vect": [...], "...": "..."}],
+    "kpis": {"type_of_the_reco": "Topological", "efficiency_of_the_reco": 0.9395}
+  }
+]
+```
+
+`efficiency_of_the_reco` is the maximum rho one step after applying the action, from Grid2Op's
+simulation. Lower is better.
+
+### Configuration
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `API_TOKEN` | *(required)* | Bearer token clients must send; every request fails with 500 if unset |
+| `GRID2OP_ENV` | `ai4realnet_small` | Environment name in `~/data_grid2op`, or a path to it (set in the image) |
+| `MODEL_PATH` | `data/best_model` | Directory with the Lightning checkpoint and `config.json` |
+| `ACTIONS_PATH` | `data/actions/soft_actions.npy` | Action space the model scores |
+| `SCALER_PATH` | `data/scaler_all.pkl` | Feature scaler used at training time |
+| `N_RECOMMENDATIONS` | `3` | Maximum number of recommendations per request |
+| `EXTRA_SIMULATION_BUDGET` | `300` | Simulations allowed after the first suitable action |
+| `BEST_ACTION_THRESHOLD` | `0.95` | rho an action must reach to count as suitable |
+| `MAX_ACTION_SIM` | `2000` | Candidates simulated while looking for the first suitable action |
+| `AGENT_TYPE` | `2` | Agent identifier sent to InteractiveAI |
+| `AGENT_PORT` | `5124` | Host port used by `docker compose` |
+
+Retraining the model only requires pointing `MODEL_PATH`, `ACTIONS_PATH` and `SCALER_PATH` at the
+new artifacts.
+
+The service handles one request at a time. A request typically takes well under a second, and a
+few seconds when the agent has to search deep into its ranking.
 
 ---
 

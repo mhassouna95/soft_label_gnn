@@ -1,0 +1,24 @@
+# Dependencies of the agent API (app/), for Python 3.12.
+#
+# In the Docker image torch is installed from the PyTorch CPU index first; the
+# pin below then keeps pip from replacing it. Outside Docker, install CPU torch
+# the same way if you do not need CUDA:
+#   pip install --index-url https://download.pytorch.org/whl/cpu torch==2.12.1
+#   pip install -r requirements_docker.txt
+
+torch==2.12.1
+torch-geometric==2.8.0
+pytorch-lightning==2.6.5
+
+grid2op==1.12.2
+lightsim2grid==0.13.1
+pandapower==3.4.0
+
+numpy==2.3.5
+scipy==1.16.3
+pandas==2.3.3
+scikit-learn==1.9.0
+h5py==3.14.0
+
+fastapi==0.141.1
+uvicorn[standard]==0.53.0

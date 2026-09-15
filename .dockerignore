@@ -1,0 +1,13 @@
+# Build context allowlist: only what the Dockerfile copies.
+*
+!requirements_docker.txt
+!GNNAgent.py
+!gnn/
+!evaluation/utilities.py
+!app/
+!data/best_model/
+!data/actions/soft_actions.npy
+!data/scaler_all.pkl
+
+**/__pycache__
+**/.ipynb_checkpoints
