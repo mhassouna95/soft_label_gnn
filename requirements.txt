@@ -1,0 +1,34 @@
+# Versions this branch is validated against end to end (Python 3.9): the agent
+# was constructed from data/best_model + data/actions + data/scaler_all.pkl and
+# run against a real InteractiveAI observation on this exact set.
+#
+# The released checkpoint was written by PyTorch Lightning 2.5.5; loading it on
+# 2.1.3 emits a harmless version-migration warning. The committed scaler loads
+# on both NumPy 1.24.x and NumPy 2.x, so a modern stack works too.
+
+# Grid2Op environment
+grid2op==1.9.8
+lightsim2grid==0.7.5
+
+# Deep learning
+numpy==1.24.3
+torch==2.1.2
+torch-geometric==2.6.1
+pytorch-lightning==2.1.3
+
+# Hyperparameter search
+optuna==3.6.1
+
+# Scientific stack
+pandas==2.2.3
+scikit-learn==1.4.0
+h5py==3.10.0
+matplotlib
+
+# Utilities
+defopt
+ubelt
+
+# Notebooks only
+seaborn
+wandb

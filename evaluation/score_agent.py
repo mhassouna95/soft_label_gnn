@@ -20,7 +20,7 @@ from grid2op.Environment import BaseEnv
 from grid2op.Episode import EpisodeData
 from grid2op.Reward import L2RPNWCCI2022ScoreFun, L2RPNSandBoxScore
 from grid2op.dtypes import dt_int
-from grid2op.utils import ScoreL2RPN2020, EpisodeStatistics
+from grid2op.utils import ScoreL2RPN2020, EpisodeStatistics, ScoreL2RPN2023
 from matplotlib.axes._base import _AxesBase
 from ubelt import Timer
 
@@ -99,8 +99,14 @@ def render_report(report_path: Path, report: AgentReport, comparison_reports: Li
         f.write(f"\n![Survival Plot]({survival_plot_name})\n")
 
         f.write("\n\n ## Raw Data/Scores \n\n")
+        #pd.DataFrame(report.score_data).to_markdown(f)
+        f.write(f"\n\n### {report.agent_name}\n\n")
         pd.DataFrame(report.score_data).to_markdown(f)
-
+        #new
+        for comparison_report in comparison_reports:
+            f.write(f"\n\n### {comparison_report.agent_name}\n\n")
+            pd.DataFrame(comparison_report.score_data).to_markdown(f)
+        #new
         f.write(f"\n\n ## Metadata: \n\n Grid2Op Version: {report.g2op_version}")
 
 
@@ -240,7 +246,7 @@ def score_agent(
         nb_episodes: Optional[int] = None,
         nb_process: int = os.cpu_count(),
         reinit: Optional[bool] = False,
-        score_l2rpn2020: Optional[bool] = True
+        score_version: str = "2020"
 ) -> AgentReport:
     """Score the given agent in the given environment, saving logs in log_dir.
 
@@ -304,28 +310,70 @@ def score_agent(
             for path, el in li_stats:
                 shutil.rmtree(os.path.join(path, el), ignore_errors=True)
             print("Delition done! Start re-running agent")
-
-        if score_l2rpn2020:
+        #2023 adjustment
+        if score_version == "2020":
             my_score = ScoreL2RPN2020WithNames(
-                env, nb_scenario=nb_episodes, env_seeds=env_seeds, agent_seeds=agent_seeds, verbose=3
+            env,
+            nb_scenario=nb_episodes,
+            env_seeds=env_seeds,
+            agent_seeds=agent_seeds,
+            verbose=3
             )
-        else:
+        
+        elif score_version == "2022":
             my_score = ScoreL2RPN2022WithNames(
-                env, nb_scenario=nb_episodes, env_seeds=env_seeds, agent_seeds=agent_seeds, verbose=3
+                env,
+                nb_scenario=nb_episodes,
+                env_seeds=env_seeds,
+                agent_seeds=agent_seeds,
+                verbose=3
             )
+        
+        elif score_version == "2023":
+            my_score = ScoreL2RPN2023WithNames(
+                env,
+                nb_scenario=nb_episodes,
+                env_seeds=env_seeds,
+                agent_seeds=agent_seeds,
+                verbose=3
+            )
+        
+        else:
+            raise ValueError(f"Unknown score_version: {score_version}. Use '2020', '2022', or '2023'.")
 
         log_path.mkdir(exist_ok=True, parents=True)
         all_scores, ts_survived, total_ts, episode_names = my_score.get(
             agent, nb_process=nb_process, path_save=str(log_path),seed_name=str(seed)
         )
+    #2023 adjustment    
+    if score_version == "2023":
+        final_scores = [score[0] for score in all_scores]
+        op_scores = [score[1] for score in all_scores]
+        nres_scores = [score[2] for score in all_scores]
+        assistant_scores = [score[3] for score in all_scores]
+    
+        score_data = {
+            "all_scores": final_scores,
+            "op_scores": op_scores,
+            "nres_scores": nres_scores,
+            "assistant_scores": assistant_scores,
+            "ts_survived": ts_survived,
+            "total_ts": total_ts,
+            "episode_name": episode_names,
+        }
+    
+        avg_score = np.array(final_scores).mean()
+    
+    else:
+        score_data = {
+            "all_scores": all_scores,
+            "ts_survived": ts_survived,
+            "total_ts": total_ts,
+            "episode_name": episode_names,
+        }
 
-    score_data = {
-        "all_scores": all_scores,
-        "ts_survived": ts_survived,
-        "total_ts": total_ts,
-        "episode_name": episode_names,
-    }
     avg_score = np.array(all_scores).mean()
+    
     return AgentReport(
         agent_name=agent_name,
         score_data=score_data,
@@ -346,7 +394,7 @@ def load_or_run(
         number_episodes: int = 2,
         seed: int = 42,
         reinit: bool = False,
-        score_l2rpn2020: Optional[bool] = True
+        score_version: str = "2020"
 ) -> AgentReport:
     """Load the given report at cache_path or score the agent if it doesn't exist.
 
@@ -386,7 +434,85 @@ def load_or_run(
 
     report = score_agent(
         agent, env, log_path=logs_path, name=name, nb_process=nb_processes, nb_episodes=number_episodes,
-        seed=seed, reinit=reinit, score_l2rpn2020=score_l2rpn2020
+        seed=seed, reinit=reinit, score_version=score_version
     )
     report.save(report_path)
     return report
+class ScoreL2RPN2023WithNames(ScoreL2RPN2023):
+    """
+    Extension of Grid2Op's ScoreL2RPN2023 class to also return scenario names.
+    This is used for evaluating agents on the L2RPN 2023 environment.
+    """
+
+    def get(
+            self,
+            agent: BaseAgent,
+            path_save: Optional[str] = None,
+            nb_process: int = 1,
+            seed_name: str = None
+    ) -> Tuple[List[float], List[int], List[int], List[str]]:
+
+        if path_save is not None:
+            need_delete = False
+            path_save = os.path.abspath(path_save)
+        else:
+            need_delete = True
+            dir_tmp = tempfile.TemporaryDirectory()
+            path_save = dir_tmp.name
+
+        if self.verbose >= 1:
+            print("Starts the evaluation of the agent")
+
+        es_instance = EpisodeStatistics(self.env, name_stats=seed_name)
+
+        es_instance.run_env(
+            self.env,
+            env_seeds=self.env_seeds,
+            agent_seeds=self.agent_seeds,
+            path_save=path_save,
+            parameters=self.env.parameters,
+            scores_func=self.scores_func,
+            agent=agent,
+            max_step=self.max_step,
+            nb_scenario=self.nb_scenario,
+            pbar=self.verbose >= 2,
+            nb_process=nb_process,
+        )
+
+        if self.verbose >= 1:
+            print("Start the evaluation of the scores")
+
+        meta_data_dn = self.stat_dn.get_metadata()
+        no_ov_metadata = self.stat_no_overflow_rp.get_metadata()
+
+        all_scores = []
+        ts_survived = []
+        total_ts = []
+        scenario_names = []
+
+        for ep_id in range(self.nb_scenario):
+            this_ep_nm = meta_data_dn[f"{ep_id}"]["scenario_name"]
+
+            with open(os.path.join(path_save, this_ep_nm, EpisodeData.META), "r", encoding="utf-8") as f:
+                this_epi_meta = json.load(f)
+
+            with open(os.path.join(path_save, this_ep_nm, EpisodeData.OTHER_REWARDS), "r", encoding="utf-8") as f:
+                this_epi_scores = json.load(f)
+
+            score_this_ep, nb_ts_survived, total_ts_tmp = self._compute_episode_score(
+                ep_id,
+                meta=this_epi_meta,
+                other_rewards=this_epi_scores,
+                dn_metadata=meta_data_dn,
+                no_ov_metadata=no_ov_metadata,
+            )
+
+            all_scores.append(score_this_ep)
+            ts_survived.append(nb_ts_survived)
+            total_ts.append(total_ts_tmp)
+            scenario_names.append(this_ep_nm)
+
+        if need_delete:
+            dir_tmp.cleanup()
+
+        return all_scores, ts_survived, total_ts, scenario_names

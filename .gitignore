@@ -1,0 +1,38 @@
+# Byte-compiled / caches
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+**/.ipynb_checkpoints/
+
+# Site-specific launcher / cluster scripts (SLURM etc.)
+*.sh
+
+# Data-generation and action-space-reduction stages (kept out of the repository;
+# the resulting action space ships in data/actions/)
+action_reduction/
+data_collection/
+
+# Generated datasets, experiment output and logs.
+# Only the action space, the scaler and the released best model are tracked.
+data/*
+!data/actions/
+!data/best_model/
+!data/scaler_all.pkl
+!data/scaler_all.npz
+logs/
+greedy_log/
+res/
+seeds_results/
+saved_models/
+lightning_logs/
+training/
+
+# Bulk artifacts
+*.h5
+*.csv
+*.log
+*.pt
+
+# Model checkpoints: only the released best model is tracked
+*.ckpt
+!data/best_model/*.ckpt

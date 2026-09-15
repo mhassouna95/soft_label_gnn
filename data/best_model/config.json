@@ -1,0 +1,85 @@
+{
+    "lr_scheduler": {
+        "type": "ReduceLROnPlateau",
+        "params": {
+            "mode": "min",
+            "factor": 0.99,
+            "patience": 20,
+            "verbose": true,
+            "min_lr": 1e-10
+        }
+    },
+    "kwargs_algorithm": {
+        "lr": 9.302603517798478e-05,
+        "weight_decay": 4.005427972065182e-07
+    },
+    "in_channels": 27,
+    "gat_layers": [
+        {
+            "out_channels": 128,
+            "heads": 8,
+            "dropout": 0.2576869550803659,
+            "concat": true
+        },
+        {
+            "out_channels": 32,
+            "heads": 4,
+            "dropout": 0.07584116081875439,
+            "concat": true
+        },
+        {
+            "out_channels": 64,
+            "heads": 8,
+            "dropout": 0.3026873607952611,
+            "concat": true
+        },
+        {
+            "out_channels": 32,
+            "heads": 4,
+            "dropout": 0.27908908896116574,
+            "concat": true
+        },
+        {
+            "out_channels": 32,
+            "heads": 4,
+            "dropout": 0.09009827011104267,
+            "concat": true
+        },
+        {
+            "out_channels": 32,
+            "heads": 8,
+            "dropout": 0.29601955931346974,
+            "concat": true
+        },
+        {
+            "out_channels": 128,
+            "heads": 1,
+            "dropout": 0.4223143192539468,
+            "concat": false
+        }
+    ],
+    "linear_layers": [
+        {
+            "out_features": 4096,
+            "dropout": 0.3828161820743624
+        },
+        {
+            "out_features": 1024,
+            "dropout": 0.23990168574942783
+        },
+        {
+            "out_features": 2048,
+            "dropout": 0.40234148385091517
+        },
+        {
+            "out_features": 2000
+        }
+    ],
+    "dropout": 0.0,
+    "pooling_type": "max",
+    "gat_activation": "elu",
+    "linear_activation": "relu",
+    "batch_size": 64,
+    "cluster_assignment": null,
+    "out_channels_lin": 2000
+}

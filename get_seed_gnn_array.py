@@ -15,13 +15,25 @@ import numpy as np
 from grid2op.Agent import DoNothingAgent
 from grid2op.Environment import BaseEnv
 from lightsim2grid import LightSimBackend
+from grid2op.Observation import CompleteObservation
+
 
 from evaluation.score_agent import load_or_run, render_report
-from evaluation.GNNAgent import GNNAgent, GNNAgentN1
+from GNNAgent import GNNAgent
 
-DATA_PATH = "./" # Adjust these paths to get to correct data path of your env and where you want to save stuff
- # Where can we find the 2022 dir and the models
-HOME_PATH = "./eval"
+# Project root: every default path below is relative to it.
+PROJECT_ROOT = Path(__file__).resolve().parent
+
+# Where the per-seed evaluation results are written.
+# Override with the RESULTS_PATH environment variable.
+RESULTS_PATH = Path(os.environ.get("RESULTS_PATH", PROJECT_ROOT / "seeds_results" / "gnn"))
+
+# Directory holding one copy of the validation environment per seed, named
+# ai4realnet_small_<seed> (see the "Multiple Seed Evaluation" section of the README).
+# Override with the VALIDATION_ENV_PATH environment variable.
+VALIDATION_ENV_PATH = Path(
+    os.environ.get("VALIDATION_ENV_PATH", PROJECT_ROOT / "data" / "validation_envs")
+)
 
 
 def run_evaluation_of_env(agent_dict: dict, env: BaseEnv, out_path: Path, seed: Optional[int], nb_process) -> Tuple[
@@ -39,25 +51,46 @@ def run_evaluation_of_env(agent_dict: dict, env: BaseEnv, out_path: Path, seed: 
     Returns: None
 
     """
-    if out_path.is_dir() is False:
-        os.mkdir(out_path)
+    out_path.mkdir(parents=True, exist_ok=True)
 
     number_of_runs = len(os.listdir(env.chronics_handler.path))
 
     do_nothing_agent = DoNothingAgent(env.action_space)
     
-    dn_report = load_or_run(agent=do_nothing_agent, env=env, output_path=out_path, name="DoNothing",
-                            number_episodes=number_of_runs, seed=seed, reinit=True)
+    dn_report = load_or_run(
+                    agent=do_nothing_agent,
+                    env=env,
+                    output_path=out_path,
+                    name="DoNothing",
+                    number_episodes=number_of_runs,
+                    seed=seed,
+                    reinit=True,
+                    score_version="2022"
+                )
     print(f"The Do-Nothing agent has the scores of: {dn_report.score_data['all_scores']}")
 
     agent_res = []
 
     for name, agent in agent_dict.items():
         print(f"Run with Agent {name}")
-        agent_res.append(load_or_run(agent, env=env, output_path=out_path, name=name,
-                                     nb_processes=nb_process,
-                                     number_episodes=number_of_runs, seed=seed,
-                                     score_l2rpn2020=False))
+        agent_res.append(load_or_run(
+            agent,
+            env=env,
+            output_path=out_path,
+            name=name,
+            nb_processes=nb_process,
+            number_episodes=number_of_runs,
+            seed=seed,
+            score_version="2022",
+            overwrite=True,
+        ))
+
+        # Save simulation counts after the evaluation finished
+        if hasattr(agent, "save_simulation_counts"):
+            agent.save_simulation_counts(
+                out_path / "agent_logs" / name / "simulation_counts.npz"
+            )
+
 
         sys.stdout.flush()
 
@@ -82,12 +115,10 @@ def create_agents_and_env(seed=None):
     Returns: dictionary of agent
 
     """
-    # Paths (delete later for privacy reasons)
-    env_path = Path("/mnt/home/mhassouna/share") / "envs3/"
-    
-    ppath = Path(HOME_PATH)
-    actions_list = ppath /  "actions.npy"
-    #topo_path = Path(DATA_PATH) / "junior"/"wcci2022_topo/"
+    # Paths
+    env_path = VALIDATION_ENV_PATH
+    ppath = PROJECT_ROOT
+    actions_list = ppath / "data" / "actions" / "soft_actions.npy"
     
     
     ##############
@@ -95,15 +126,15 @@ def create_agents_and_env(seed=None):
     ##############
     # Note: In order for this to work, you have to duplicate your validation environment 
     # by the number of seeds you want to run. This needs to be done to ensure that the 
-    # the DoNothing Stastistics are independend from each other 
+    # the DoNothing Stastistics are independend from each other
     backend = LightSimBackend()
     env = grid2op.make(
-        env_path  / f"l2rpn_2022_val_{seed}",
-        backend=LightSimBackend())
-    env.generate_classes()
-    env = grid2op.make(
-        env_path  / f"l2rpn_2022_val_{seed}",
-        backend=LightSimBackend(), experimental_read_from_local_dir=True)
+        env_path  / f"ai4realnet_small_{seed}",
+        backend=LightSimBackend(), observation_class=CompleteObservation)
+    # env.generate_classes()
+    # env = grid2op.make(
+    #     env_path  / f"l2rpn_2022_val_{seed}",
+    #     backend=LightSimBackend(), experimental_read_from_local_dir=True)
 
 
     ##############
@@ -111,40 +142,28 @@ def create_agents_and_env(seed=None):
     ##############    
     
     # This scaler is made for subset=True Agents
-    with open(ppath / 'scaler_all.pkl', "rb") as fp:  
+    with open(ppath / "data" / "scaler_all.pkl", "rb") as fp:
         scaler_old = pickle.load(fp)
     
     
     ##############
     # Agents 
     ##############
-    agent_kwargs = {"model_path": ppath / "model_soft",
-                    "subset": True,
+    agent_kwargs = {"model_path": ppath / "data" / "best_model",
                     "this_directory_path": ppath / "res",
-                    "action_space_path": actions_list,
+                    "subset": True,
                     "scaler": scaler_old,
                     "topo": True,
-                    "max_action_sim":2030,
+                    "max_action_sim":2000,
                     }
 
-    gnn90 = GNNAgent(
+    gnn_agent = GNNAgent(
         action_space=env.action_space,
         action_space_file=actions_list,
-        best_action_threshold=0.90,
-        run_with_tf = False,
+        best_action_threshold=0.95,
         **agent_kwargs)
-    
-    # Adding topology Agent:
-    """topo_kwargs = agent_kwargs.copy()
-    topo_kwargs["topology_actions"] = topo_path / "topologies_only.npy"
 
-    topo_agent2 = TopologyAgent2(action_space=env.action_space,
-                               action_space_file=ppath / "2022" / "actions" / "actions.npy",
-                               best_action_threshold=0.95,
-                               topo_threshold = 0.85,
-                               **topo_kwargs)"""
-    
-    agents = {"SoftGNN_90": gnn90
+    agents = {"SoftGNN_95": gnn_agent
              }
 
     return agents, env
@@ -171,20 +190,20 @@ if __name__ == "__main__":
     print(f"-------------------------- Run main with {seed} -------------------------")
     agents, env = create_agents_and_env(seed)
 
-    print(f"Let's fuck shit up. I choose you, seed {seed}")
+    print(f"Running evaluation for seed {seed}")
     res, surv_time = run_evaluation_of_env(agent_dict=agents,
                                            env=env,
-                                           out_path=Path("seeds_gnn_2") / str(seed),
+                                           out_path= RESULTS_PATH / "seeds_gnn_95" / str(seed),
                                            seed=seed,
                                            nb_process=1)
     print(f"-------------------------- Done with {seed} -------------------------")
     collect_scores[seed] = res
     collect_survival_time[seed] = surv_time
 
-    with open(f'./seeds_gnn_2/seed_res_gnn_{seed}.pkl', 'wb') as handle:
+    with open(RESULTS_PATH / f"seeds_gnn_95/seed_res_gnn_{seed}.pkl", 'wb') as handle:
         pickle.dump(collect_scores, handle)
 
-    with open(f'./seeds_gnn_2/surv_time_gnn_{seed}.pkl', 'wb') as handle:
+    with open(RESULTS_PATH / f'seeds_gnn_95/surv_time_gnn_{seed}.pkl', 'wb') as handle:
         pickle.dump(collect_survival_time, handle)
 
 

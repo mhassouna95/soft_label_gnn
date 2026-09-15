@@ -9,6 +9,7 @@ from grid2op.Action import BaseAction, ActionSpace
 from grid2op.Environment import BaseEnv
 from grid2op.Observation import BaseObservation
 from grid2op.dtypes import dt_int
+import h5py
 
 
 def remove_bus_assignment_of_lines(obs, original_action, lines):
@@ -529,3 +530,36 @@ def save_actionspace_binbinchen(save_path: Path, actions: List[BaseAction]):
 
     np.save(str(save_path), action_space)
     logging.info(f"Save an action space with the size of {action_space.shape[0]:d}")
+
+def save_batch_h5(save_path: Path, states, rhos_list):
+    """
+    Saves a batch of simulation data to an HDF5 file.
+
+    This function appends state vectors, action IDs, and max rho values to a `.h5` file,
+    organizing the data into uniquely indexed groups per state.
+
+    Args:
+        save_path (Path): The file path to save the HDF5 data. If a directory is provided,
+                          the file will be named `soft_targets.h5` inside that directory.
+        states (List[np.ndarray]): List of environment state vectors, each representing an observation.
+        actions_list (List[List[int]]): List of lists, where each sublist contains action IDs considered for that state.
+        rhos_list (List[List[float]]): List of lists, where each sublist contains the corresponding max rho values
+                                       for each action ID in `actions_list`.
+
+    Returns:
+        None. The data is written to an HDF5 file with one group per state.
+    """
+    states = np.array(states)
+    if states.ndim == 1:
+        states = np.expand_dims(states, axis=0)
+
+    if save_path.is_dir():
+        save_path = save_path / "gnn_collected.h5"
+
+    with h5py.File(save_path, 'a') as f:
+        starting_index = len(f.keys())
+        for i, (state, max_rhos) in enumerate(zip(states, rhos_list)):
+            group_name = f"state_{starting_index + i}"
+            group = f.create_group(group_name)
+            group.create_dataset('state', data=state, compression='gzip')
+            group.create_dataset('max_rhos', data=np.array(max_rhos), compression='gzip')

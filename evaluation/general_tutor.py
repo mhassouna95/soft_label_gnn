@@ -15,7 +15,7 @@ from grid2op.Observation import BaseObservation
 import sys
 #sys.path.append(str(Path(__file__).parent.parent.parent))  # Adjust path to import utilities
 
-from .utilities import simulate_action, find_best_line_to_reconnect, split_action_and_return, \
+from evaluation.utilities import simulate_action, find_best_line_to_reconnect, split_action_and_return, \
     map_actions, revert_topo
 
 
@@ -74,6 +74,13 @@ class GeneralTutor(BaseAgent):
         self.next_actions = None
         self.revert_to_original_topo = revert_to_original_topo
 
+        # Simulation counters
+        self.total_simulation_times = 0
+        self.total_valid_simulation_times = 0
+        
+        self.step_simulation_times = []
+        self.step_valid_simulation_times = []
+
     def act_with_id(self, observation: BaseObservation) -> Tuple[np.ndarray, int]:
         """Compute greedy search of Tutor.
 
@@ -88,7 +95,10 @@ class GeneralTutor(BaseAgent):
 
         """
         start_time = time.time()
-
+        
+        simulations_this_step = 0
+        valid_simulations_this_step = 0
+        
         # Check for do nothing
         if observation.rho.max() < self.do_nothing_threshold:
             # secure, return "do nothing" in bus switches.
@@ -96,7 +106,10 @@ class GeneralTutor(BaseAgent):
                 act = revert_topo(self.action_space, observation)
             else:
                 act = self.action_space({}).to_vect()
-
+           
+            self.step_simulation_times.append(0)
+            self.step_valid_simulation_times.append(0)
+            
             return act, -1
 
         # Take lower values of either rho max or do nothing rho max
@@ -116,9 +129,17 @@ class GeneralTutor(BaseAgent):
                 obs_sim, valid_action = simulate_action(
                     action_vect=action_array, action_space=self.action_space, obs=observation
                 )
+
+                # Every call to simulate_action counts as one simulation
+                simulations_this_step += 1
+                self.total_simulation_times += 1
+                
                 if not valid_action:
                     continue
-
+                # Count only legal/valid simulations here
+                valid_simulations_this_step += 1
+                self.total_valid_simulation_times += 1
+                
                 # Simulate action (even though it might be illegal for tuple or triple action)
                 if obs_sim < min_rho:
                     min_rho = obs_sim
@@ -128,6 +149,17 @@ class GeneralTutor(BaseAgent):
             if min_rho <= self.action_threshold:
                 break
 
+                
+        self.step_simulation_times.append(simulations_this_step)
+        self.step_valid_simulation_times.append(valid_simulations_this_step)
+    
+        logging.info(
+            f"simulations this step: {simulations_this_step}, "
+            f"valid simulations this step: {valid_simulations_this_step}, "
+            f"total simulations: {self.total_simulation_times}, "
+            f"total valid simulations: {self.total_valid_simulation_times}"
+        )
+        
         if self.return_status:
             print_status(observation, best_action_index, old_rho_max, min_rho, start_time)
 
@@ -216,7 +248,34 @@ class GeneralTutor(BaseAgent):
     
         return action_chosen, best_action_index, action_rho_list
 
-
+    def save_simulation_counts(self, save_path: Union[str, Path]) -> None:
+        """Save simulation counters to an NPZ file."""
+    
+        save_path = Path(save_path)
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+    
+        np.savez(
+            save_path,
+            step_simulation_times=np.asarray(
+                self.step_simulation_times,
+                dtype=np.int64
+            ),
+            step_valid_simulation_times=np.asarray(
+                self.step_valid_simulation_times,
+                dtype=np.int64
+            ),
+            total_simulation_times=np.int64(
+                self.total_simulation_times
+            ),
+            total_valid_simulation_times=np.int64(
+                self.total_valid_simulation_times
+            ),
+        )
+    
+        logging.info(
+            f"Saved GeneralTutor simulation counts to {save_path}"
+        )
+        
     def act(self, observation: BaseObservation, reward: float, done: bool = False) -> BaseAction:
         """Compute greedy search of Tutor.
 

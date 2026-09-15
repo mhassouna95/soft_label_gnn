@@ -1,169 +1,243 @@
-# SoftGNN: Soft-Label Imitation Learning for Power Grid Topology Control
+# SoftGNN — ICAPS 2021 (InteractiveAI)
 
-> **Code for the paper:** > *Learning Topology Actions for Power Grid Control: A Graph-Based Soft-Label Imitation Learning Approach* 
-> Mohamed Hassouna, Clara Holzhüter, Malte Lehna, Matthijs de Jong, Jan Viebahn, Bernhard Sick, Christoph Scholz
-> At ECML PKDD 2025. Lecture Notes in Computer Science(), vol 16022. Springer, Cham. https://doi.org/10.1007/978-3-032-06129-4_8 
-> [[Pre-print Paper PDF]](https://arxiv.org/abs/2503.15190)
+> Soft-label imitation learning for power grid topology control, applied to the
+> **Grid2Op `l2rpn_icaps_2021_large`** environment with a **PyTorch Lightning** training pipeline.
+>
+> This branch adapts the method from:
+> *Learning Topology Actions for Power Grid Control: A Graph-Based Soft-Label Imitation Learning Approach*
+> Mohamed Hassouna, Clara Holzhüter, Malte Lehna, Matthijs de Jong, Jan Viebahn, Bernhard Sick, Christoph Scholz.
+> ECML PKDD 2025, LNCS vol. 16022, Springer. https://doi.org/10.1007/978-3-032-06129-4_8
+> [[Pre-print PDF]](https://arxiv.org/abs/2503.15190)
 
 ---
 
 ## 🧠 Overview
 
-This repository contains the official implementation of the **SoftGNN** agent, a novel **Graph Neural Network (GNN)**-based imitation learning framework for **power grid topology control**. The approach improves over traditional hard-label imitation learning by learning from **soft labels** that capture multiple viable actions for grid congestion mitigation. The agent operates in the **Grid2Op L2RPN WCCI 2022 environment**, outperforming both the expert and state-of-the-art RL agents.
+This branch contains the **SoftGNN** agent ported from the paper's `l2rpn_wcci_2022` setup to the
+**ICAPS 2021 large** grid. The method is unchanged — a Graph Attention Network is trained to imitate
+a *distribution* over viable topology actions rather than a single expert action — but two things
+differ substantially from `main`:
 
-## 🔍 Key Features
+1. **The training pipeline is PyTorch Lightning.** The hand-written training loop
+   (`gnn/gnn_prediction.py` on `main`) is gone; the model is a `LightningModule` and training is
+   driven by `pl.Trainer` with early stopping and checkpointing.
+2. **The action space is derived from data, not shipped fixed.** Instead of a hand-picked
+   action file, the full unitary topology action set is simulated and reduced to the 2000 most
+   useful actions under three labelling strategies (soft / hard / middle-way). The resulting
+   action space ships in `data/actions/`.
 
-- **Soft-Label Generation**: Learn from a distribution over viable actions rather than a single expert action.
-- **GNN-Based Architecture**: Use Graph Attention Networks (GAT) to encode power grid topology.
-- **Action Feasibility Enhancements**: Improved substation reconfiguration support and line-disconnection handling.
-- **N-1 Security Evaluation**: Post-hoc contingency-aware action selection for increased robustness.
-- **Benchmarking**: Evaluation against greedy expert, and SOTA DRL agents in the L2RPN WCCI 2022 environment.
+### Differences from the `main` branch at a glance
+
+| | `main` (paper) | `interactiveai` (this branch) |
+|---|---|---|
+| Grid2Op environment | `l2rpn_wcci_2022` | `l2rpn_icaps_2021_large` |
+| Action space | fixed `data/actions.npy`, 2030 × 1567 | derived, 2000 × 519 |
+| Training | custom loop in `gnn/gnn_prediction.py` | PyTorch Lightning (`LightningModule` + `Trainer`) |
+| Model artifact | `model.pt` + `train_config.pkl` | Lightning `.ckpt` + `config.json` |
+| Optimizer | Adam | AdamW |
+| Pooling options | max / mean / add | + attention, TopK, SAG |
+| Architectures | GAT | GAT + `GraphTransformer` (TransformerConv) |
+| Action-space reduction | — | derived from data (soft / hard / middle-way labelling) |
+| Agent instrumentation | — | per-step simulation counters (`save_simulation_counts`) |
 
 ---
 
 ## 🛠️ Installation
 
-To run the experiments and use the agents in this repository, follow the steps below to set up the environment and dependencies.
-
 ### Requirements
-- Python >= 3.8
+- Python >= 3.9
 - [Grid2Op](https://github.com/rte-france/Grid2Op)
-- [LightSim2Grid](https://github.com/rte-france/LightSim2Grid) (Highly recommended for performance)
-- [PyTorch](https://pytorch.org/) & [PyTorch Geometric](https://pytorch-geometric.readthedocs.io/en/latest/)
+- [LightSim2Grid](https://github.com/rte-france/LightSim2Grid) (strongly recommended for performance)
+- [PyTorch](https://pytorch.org/), [PyTorch Geometric](https://pytorch-geometric.readthedocs.io/), [PyTorch Lightning](https://lightning.ai/)
 
 ### Setup
 
-1. **Create a Virtual Environment (Recommended)**
-   ```bash
-   conda create -n softgnn python=3.9
-   conda activate softgnn
-   ```
-2. **Install Dependencies** Install the core dependencies required for Grid2Op and GNN training:
-   ```bash
-    # Install Grid2Op and LightSim2Grid
-    pip install grid2op lightsim2grid
-    
-    # Install PyTorch (adjust for your CUDA version)
-    pip install torch torchvision torchaudio
-    
-    # Install PyTorch Geometric
-    pip install torch_geometric
-    
-    # Install other utilities
-    pip install optuna pandas scikit-learn h5py
-   ```
+```bash
+conda create -n softgnn python=3.9
+conda activate softgnn
+
+# Install PyTorch matching your CUDA build first, then:
+pip install -r requirements.txt
+```
+
+`requirements.txt` pins the versions the agent is validated against end to end (grid2op 1.9.8,
+NumPy 1.24.3, torch 2.1.2, PyG 2.6.1, Lightning 2.1.3). The committed artifacts also load on a
+modern stack (verified on NumPy 2.3.5 / scikit-learn 1.9), so either works.
+
+---
 
 ## 📂 Code Structure
-The repository is organized as follows:
 
 ```
-soft_label_gnn/
-├── data/                       # Stores generated soft-label datasets and scaler files
-│   ├── actions.npy             # Action space definitions
-│   └── scaler_all.pkl          # Data scaler for normalization
-├── evaluation/                 # Scripts for evaluating agent performance
-│   ├── general_tutor.py        # Logic for the expert tutor (Taken and extended from curriculumagent)
-│   ├── score_agent.py          # Scoring script for Grid2Op agents (Taken from curriculumagent)
-│   └── utilities.py            # Helper functions for simulations and metrics (Taken and extended from curriculumagent)
-├── gnn/                        # GNN model definitions and training logic
-│   ├── gnn_models.py           # Implementation of GAT architecture
-│   ├── gnn_prediction.py       # Training loop and prediction logic
-│   ├── obs_converter.py        # Converts Grid2Op observations to PyG graphs
-│   └── torch_geometric_datasets.py # Custom PyG dataset loader
-├── saved_models/               # Directory for saving trained model checkpoints
-├── data_generation.py          # Script to generate soft-label experience data
-├── Data_Processing.ipynb       # Code to process the collected data into graphs ready to use for GNN training
-├── soft_target_optuna_distributed.py # Distributed hyperparameter optimization (Training Script)
-├── GNNAgent.py                 # Main agent classes (GNNAgent & GNNAgentN1)
-├── get_seed_gnn_array.py       # Evaluation on 20 seeds 
-└── README.md                   # Project documentation
+.
+├── data/
+│   ├── actions/                      # Reduced action spaces and their label files
+│   │   ├── soft_actions.npy          # 2000 soft-label actions (used by the agent)
+│   │   ├── hard_actions.npy          # 2000 hard-label actions (ablation)
+│   │   └── jsons/                    # soft_labels, hard_labels, all_critical_actions
+│   ├── best_model/                   # Released model: Lightning checkpoint + architecture
+│   │   ├── best_model.ckpt
+│   │   └── config.json
+│   └── scaler_all.pkl                # Feature scaler for subset=True agents
+├── gnn/
+│   ├── gnn_models.py                 # GAT and GraphTransformer as LightningModules
+│   ├── obs_converter.py              # Grid2Op observation -> PyG graph features
+│   └── torch_geometric_datasets.py   # PyG dataset variants + feature transforms
+├── evaluation/
+│   ├── general_tutor.py              # Greedy expert tutor (from curriculumagent)
+│   ├── n_minus_one_tutor.py          # N-1 contingency-aware tutor
+│   ├── score_agent.py                # Grid2Op scoring harness (from curriculumagent)
+│   └── utilities.py                  # Simulation / action helpers
+├── notebooks/                        # Result analysis
+├── GNNAgent.py                       # The SoftGNN agent
+├── Data_Processing.ipynb             # Stage 3: collected data -> processed PyG graphs
+├── soft_target_optuna_distributed.py # Stage 4: Optuna + Lightning hyperparameter search
+├── train.py                          # Stage 4b: train a single model from a saved config
+├── get_seed_gnn_array.py             # Stage 5: 20-seed evaluation of the GNN agent
+├── get_seed_greedy_array.py          # Stage 5: 20-seed evaluation of the greedy expert
+└── requirements.txt
 ```
+
+> **Note:** SLURM launcher scripts are intentionally not tracked (`*.sh` is gitignored),
+> since they are specific to the cluster they were written for. Every stage below can be run
+> directly with `python` from the project root.
+
+---
 
 ## 🚀 Usage
 
-### Data generation
-The Soft-Label dataset is generated by an expert tutor (Greedy) that explores viable topology actions for specific grid states.
+All commands are run **from the project root**. Paths default to locations under `data/` and can be
+overridden with environment variables (`DATASET_PATH`, `CONFIG_PATH`, `OUTPUT_PATH`, `STUDY_DIR`,
+`RESULTS_PATH`, `VALIDATION_ENV_PATH`, `GRID2OP_ENV`).
 
-To generate new experience data:
-```
-python data_generation.py
-```
+### 1. Data generation and action-space reduction
 
-- Input: Uses data/actions.npy and the l2rpn_wcci_2022 environment.
+The scripts that generate the raw experience and reduce the action space are **not part of this
+repository**. Their output is, so this stage is already done for you:
 
-- Output: Saves experience (states, action IDs, and rho values) to the data/ directory in .h5 or .npy format.
+- `data/actions/soft_actions.npy` — the 2000-action soft-label action space used by the agent
+- `data/actions/hard_actions.npy` — the hard-label action space (ablation)
+- `data/actions/jsons/` — the underlying `soft_labels`, `hard_labels` and `all_critical_actions`
 
-- Run the Notebook Data_Processing.ipynb to process the data into graphs and save them ready for training.
+For reference, that stage worked as follows. The environment is split into train/val/test chronics;
+every unitary topology action is then simulated whenever `rho >= 0.95`, recording the resulting max
+rho per action into one HDF5 file per chronic. Soft labels weight each action by its normalised
+`1 - rho` improvement accumulated over all states, and the top 2000 actions — plus any "critical"
+action scoring above 0.5 in some state — form the final action space. Hard labels instead take the
+single best action per state, and the middle-way variant counts actions falling below a rho
+threshold.
 
-### Training (Hyperparameter Optimization)
+### 2. Process data into graphs
 
-We use Optuna to optimize the GNN architecture (e.g., number of GAT layers, heads, hidden dimensions) and training hyperparameters.
+Run `Data_Processing.ipynb` to turn the collected experience into processed PyG graph datasets and
+fit the feature scaler. Point `DATASET_PATH` at the output directory.
 
-To start the distributed training/optimization process:
+### 3. Train
+
+Hyperparameter search (Optuna over GAT depth/width/heads, pooling, linear layers, lr, weight decay):
 
 ```bash
 python soft_target_optuna_distributed.py
 ```
-- Configuration: Defines the search space for learning rate, weight decay, GAT layers, and dropout.
-- Storage: Results are stored in a local SQLite database (study.db) in saved_models/.
 
-### Running the Agent
+The study database and per-trial checkpoints go to `$STUDY_DIR` (default `saved_models/gat_hypertun`).
+Multiple processes can point at the same SQLite study to search in parallel.
 
-The repository provides two agent variants in GNNAgent.py:
+To retrain a single model from a saved architecture (defaults to the released best model's config):
 
-    GNNAgent: The standard GNN-based soft-label agent.
+```bash
+python train.py
+```
 
-    GNNAgentN1: An advanced agent that performs "N-1" security checks (post-hoc contingency analysis) on the top candidate actions.
+### 4. Evaluate
 
-### Example: Loading the Agent
+```bash
+python get_seed_gnn_array.py <index 0-19>      # GNN agent
+python get_seed_greedy_array.py <index 0-19>   # greedy expert baseline
+```
+
+Each index selects one of 20 seeds. As in the paper, evaluation needs **one copy of the validation
+environment per seed**, named `ai4realnet_small_<seed>` under `$VALIDATION_ENV_PATH`, so the
+DoNothing statistics stay independent across seeds. See the
+[Grid2Op docs on splitting environments](https://grid2op.readthedocs.io/en/latest/user/environment.html#splitting-into-raining-validation-test-scenarios).
+
+---
+
+## 🤖 Running the Agent
+
+The agent lives in `GNNAgent.py` as **`GNNAgent`**.
 
 ```python
-from GNNAgent import GNNAgent
+import pickle
 from pathlib import Path
+
 import grid2op
+from lightsim2grid import LightSimBackend
+from grid2op.Observation import CompleteObservation
 
-# Initialize environment
-env = grid2op.make("l2rpn_wcci_2022")
+from GNNAgent import GNNAgent
 
-# Load the trained agent
-agent = GNNAgent(
-    action_space=env.action_space,
-    model_path=Path("./saved_models/best_model_path"),
-    action_space_path=Path("./data/actions.npy"),
-    run_with_tf=False,  # Set False for PyTorch models
-    topo=True           # Enable topological actions
+env = grid2op.make(
+    "l2rpn_icaps_2021_large",
+    backend=LightSimBackend(),
+    observation_class=CompleteObservation,
 )
 
-# Run interaction
+with open("data/scaler_all.pkl", "rb") as fp:
+    scaler = pickle.load(fp)
+
+agent = GNNAgent(
+    action_space=env.action_space,
+    model_path=Path("data/best_model"),        # directory with best_model.ckpt + config.json
+    action_space_file=Path("data/actions/soft_actions.npy"),
+    best_action_threshold=0.95,
+    subset=True,
+    scaler=scaler,
+    topo=True,
+    max_action_sim=2000,
+)
+
 obs = env.reset()
 done = False
 while not done:
-    action = agent.act(obs, reward=0, done=False)
+    action = agent.act(obs, reward=0.0, done=False)
     obs, reward, done, info = env.step(action)
-
 ```
 
-### Multiple Seed Evaluation
-To robustly evaluate your agent, make sure to run your agent on 20 seeds or more using:
-```bash
-python get_seed_gnn_array.py
-```
-Please make sure to create a suitable validation environment to evaluate on (see. https://grid2op.readthedocs.io/en/latest/user/environment.html#splitting-into-raining-validation-test-scenarios)
-## 📚 Models & Architecture
+`GNNAgent` also tracks how many action simulations it performs per step;
+`agent.save_simulation_counts(path)` writes those counters to an `.npz` file.
 
-The core model is a Graph Attention Network (GAT) defined in gnn/gnn_models.py. It processes the power grid as a graph where:
+---
 
-    - Nodes: Represent loads, generators, line ends
+## 📚 Model & Architecture
 
-    - Edges: Represent electrical connectivity.
+The released model is a 7-layer Graph Attention Network followed by 3 hidden linear layers,
+**11.3 M parameters**, trained with `KLDivLoss(reduction="batchmean")` against the soft-label
+distribution and selected by validation loss (epoch 193, `val_loss` 2.23).
 
-The model outputs a probability distribution over the discrete action space (defined in actions.npy), which acts as the soft label for the agent to imitate. The architecture of our best model can be found in `data/best_model/paper_train_config.pkl`
+- **Nodes**: loads, generators and line ends, one node per bus (27 input features).
+- **Edges**: electrical connectivity, from the Grid2Op connectivity matrix.
+- **Output**: a log-probability distribution over the 2000 reduced topology actions.
+
+The full architecture is in `data/best_model/config.json` and the weights in
+`data/best_model/best_model.ckpt`. The checkpoint is stored **without optimizer state** — it is
+for inference and fine-tuning from weights, not for resuming the original training run.
+
+> The checkpoint was written by Lightning 2.5.5; loading it under Lightning 2.1.3 emits a
+> harmless version-migration warning.
+
+`data/scaler_all.pkl` is the `StandardScaler` fitted over the training graphs' node features
+(27 features, 2,100,636 node samples). It is shipped both as a pickle and, in
+`data/scaler_all.npz`, as plain arrays (`mean`, `scale`, `var`) so it can be rebuilt without
+depending on pickle or a particular NumPy/scikit-learn version.
+
+---
 
 ## 📜 Citation
 
-If you use this code or dataset in your research, please cite our paper:
+If you use this code in your research, please cite the paper:
 
-```
+```bibtex
 @InProceedings{hassouna25_softgnn,
 author="Hassouna, Mohamed
 and Holzh{\"u}ter, Clara
@@ -191,3 +265,7 @@ pages="129--146",
 isbn="978-3-032-06129-4"
 }
 ```
+
+## 📄 License
+
+Mozilla Public License 2.0 — see [LICENSE](LICENSE).
