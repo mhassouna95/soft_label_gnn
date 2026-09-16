@@ -235,6 +235,9 @@ agent does.
 2. Actions are simulated in ranking order, up to `MAX_ACTION_SIM` (2000), until one brings the
    maximum line loading (rho) to `BEST_ACTION_THRESHOLD` (0.95) or below.
 
+InteractiveAI sends no forecasts, so every simulation uses the loads and generation of the
+observation in the request.
+
 If no action reaches the threshold, the one that lowered rho the most is recommended, or doing
 nothing if none helped. When the grid is already below the threshold, the agent recommends reverting
 to the reference topology where possible.
@@ -285,18 +288,18 @@ The response is a list with a single recommendation:
 ```json
 [
   {
-    "title": "Topological recommendation: Schematic acquisition at substation 33",
-    "description": "Assign bus 1 to line (extremity) id 48, Assign bus 1 to line (extremity) id 49, ...",
+    "title": "Topological recommendation: Schematic acquisition at substation 23",
+    "description": "Assign bus 1 to line (extremity) id 30, Assign bus 1 to line (extremity) id 31, ...",
     "use_case": "PowerGrid",
     "agent_type": 2,
     "actions": [{"_set_topo_vect": [...], "...": "..."}],
-    "kpis": {"type_of_the_reco": "Topological", "efficiency_of_the_reco": 0.9395}
+    "kpis": {"type_of_the_reco": "Topological", "efficiency_of_the_reco": 1.0274}
   }
 ]
 ```
 
 `efficiency_of_the_reco` is the maximum rho one step after applying the action, from Grid2Op's
-simulation. Lower is better.
+simulation with the request's loads and generation. Lower is better.
 
 ### Configuration
 

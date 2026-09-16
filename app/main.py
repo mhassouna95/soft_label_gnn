@@ -8,6 +8,7 @@
 import os
 import pickle
 import threading
+from datetime import timedelta
 from pathlib import Path
 from fastapi import FastAPI
 from pydantic import BaseModel
@@ -75,11 +76,35 @@ def get_recommendation(request: RecommendationRequest):
     with _lock:
         # Get recommendation from GNN agent
         obs.from_json(observation.get("context", {}).get("observation"))
+        use_current_injections(obs)
         action = agent.act(obs, reward=None, done=False)
         result = get_parade_info(action, obs)
     if result is not list:
         result = [result]
     return result
+
+
+def use_current_injections(obs):
+    """Make obs.simulate use the loads and generation of the loaded observation
+
+    from_json does not update the injections obs.simulate relies on, so every simulation would
+    keep using those of env.reset(). The request carries no forecasts, so the current injections
+    are used for both the current and the next step.
+
+    Args:
+        obs (): Observation loaded from the request
+    """
+    injections = {"injection": {
+        "load_p": obs.load_p.copy(),
+        "load_q": obs.load_q.copy(),
+        "prod_p": obs.gen_p.copy(),
+        "prod_v": obs.gen_v.copy(),
+    }}
+    time_stamp = obs.get_time_stamp()
+    next_time_stamp = time_stamp + timedelta(minutes=int(obs.delta_time))
+    obs._forecasted_inj = [(time_stamp, injections), (next_time_stamp, injections)]
+    # simulate caches the injection actions it builds from _forecasted_inj
+    obs._forecasted_grid_act.clear()
 
 
 def get_parade_info(act, obs):
