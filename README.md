@@ -226,19 +226,18 @@ operator.
 > can reach its port gets recommendations. It is meant for demonstration sandboxes, not for
 > deployment on shared or production networks.
 
-### How recommendations are chosen
+### How the recommendation is chosen
 
-The API calls `GNNAgent.recommend()`, which runs the agent's normal search:
+The API returns one recommendation: the action `GNNAgent.act()` takes, exactly as the standalone
+agent does.
 
 1. The GNN ranks all 2000 actions for the observation.
 2. Actions are simulated in ranking order, up to `MAX_ACTION_SIM` (2000), until one brings the
-   maximum line loading (rho) to `BEST_ACTION_THRESHOLD` (0.95) or below. This first action is
-   exactly the one the standalone agent would apply.
-3. The search then continues for at most `EXTRA_SIMULATION_BUDGET` (300) further simulations to
-   find more such actions, up to `N_RECOMMENDATIONS` (3) in total.
+   maximum line loading (rho) to `BEST_ACTION_THRESHOLD` (0.95) or below.
 
-If no action reaches the threshold, the actions that lower rho the most are proposed instead. When
-the grid is already below the threshold, the single action the agent would take is returned.
+If no action reaches the threshold, the one that lowered rho the most is recommended, or doing
+nothing if none helped. When the grid is already below the threshold, the agent recommends reverting
+to the reference topology where possible.
 
 ### Run with Docker
 
@@ -281,7 +280,7 @@ The request body carries the observation, as serialized by Grid2Op's `observatio
 `app/sample_request.json` is the example request from ExpertAgent's integration and matches the
 `ai4realnet_small` grid.
 
-The response is a list with one entry per recommended action:
+The response is a list with a single recommendation:
 
 ```json
 [
@@ -301,7 +300,7 @@ simulation. Lower is better.
 
 ### Configuration
 
-Set these as environment variables, e.g. `docker run -e N_RECOMMENDATIONS=5 ...`.
+Set these as environment variables, e.g. `docker run -e MAX_ACTION_SIM=500 ...`.
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -309,10 +308,8 @@ Set these as environment variables, e.g. `docker run -e N_RECOMMENDATIONS=5 ...`
 | `MODEL_PATH` | `data/best_model` | Directory with the Lightning checkpoint and `config.json` |
 | `ACTIONS_PATH` | `data/actions/soft_actions.npy` | Action space the model scores |
 | `SCALER_PATH` | `data/scaler_all.pkl` | Feature scaler used at training time |
-| `N_RECOMMENDATIONS` | `3` | Maximum number of recommendations per request |
-| `EXTRA_SIMULATION_BUDGET` | `300` | Simulations allowed after the first suitable action |
 | `BEST_ACTION_THRESHOLD` | `0.95` | rho an action must reach to count as suitable |
-| `MAX_ACTION_SIM` | `2000` | Candidates simulated while looking for the first suitable action |
+| `MAX_ACTION_SIM` | `2000` | Candidates simulated while looking for a suitable action |
 | `AGENT_TYPE` | `2` | Agent identifier sent to InteractiveAI |
 
 Retraining the model only requires pointing `MODEL_PATH`, `ACTIONS_PATH` and `SCALER_PATH` at the

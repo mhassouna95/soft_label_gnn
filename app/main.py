@@ -39,8 +39,6 @@ scaler_path = Path(os.environ.get("SCALER_PATH", PROJECT_ROOT / "data" / "scaler
 
 best_action_threshold = float(os.environ.get("BEST_ACTION_THRESHOLD", 0.95))
 max_action_sim = int(os.environ.get("MAX_ACTION_SIM", 2000))
-n_recommendations = int(os.environ.get("N_RECOMMENDATIONS", 3))
-extra_simulation_budget = int(os.environ.get("EXTRA_SIMULATION_BUDGET", 300))
 agent_type = int(os.environ.get("AGENT_TYPE", 2))
 
 with open(scaler_path, "rb") as fp:
@@ -68,14 +66,19 @@ app = FastAPI()
 
 @app.post("/api/v1/recommendation")
 def get_recommendation(request: RecommendationRequest):
+    # Convert incoming data to the observation format your agent expects
+    observation = {
+        "event": request.event,
+        "context": request.context,
+    }
+
     with _lock:
-        # Get recommendations from the GNN agent: the first one is the action the
-        # agent itself would take, the others come from continuing its search
-        obs.from_json(request.context.get("observation"))
-        recommendations = agent.recommend(obs,
-                                          n_recommendations=n_recommendations,
-                                          extra_simulation_budget=extra_simulation_budget)
-        result = [get_parade_info(reco["action"], obs) for reco in recommendations]
+        # Get recommendation from GNN agent
+        obs.from_json(observation.get("context", {}).get("observation"))
+        action = agent.act(obs, reward=None, done=False)
+        result = get_parade_info(action, obs)
+    if result is not list:
+        result = [result]
     return result
 
 
