@@ -1,19 +1,15 @@
 # command to execute the API
-# API_TOKEN=mysecrettoken GRID2OP_ENV=<path to ai4realnet_small> uvicorn app.main:app --host 0.0.0.0 --port 8000
+# GRID2OP_ENV=<path to ai4realnet_small> uvicorn app.main:app --host 0.0.0.0 --port 8000
 # Command to request a recommendation from server
-# curl -X POST http://localhost:8000/api/v1/recommendation -H "Content-Type: application/json" -H "Authorization: Bearer $API_TOKEN" --data @app/sample_request.json
+# curl -X POST http://localhost:8000/api/v1/recommendation -H "Content-Type: application/json" --data @app/sample_request.json
 # docker build -t softgnn-agent-api .
-# docker run -p 8000:8000 -e API_TOKEN=mysecrettoken softgnn-agent-api
+# docker run -p 8000:8000 softgnn-agent-api
 # docker run --rm -it --entrypoint bash softgnn-agent-api
 import os
 import pickle
-import secrets
-import logging
 import threading
 from pathlib import Path
-from typing import Optional
-from fastapi import FastAPI, Depends, HTTPException, Security, status
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi import FastAPI
 from pydantic import BaseModel
 import numpy as np
 
@@ -24,30 +20,6 @@ from lightsim2grid import LightSimBackend
 from GNNAgent import GNNAgent
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-
-# --- Logging (goes to stdout -> visible via `docker logs`) ---
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
-logger = logging.getLogger("softgnn-agent-api")
-
-# --- Authentication ---
-_security = HTTPBearer()
-_API_TOKEN = os.environ.get("API_TOKEN", "")
-
-def verify_token(credentials: HTTPAuthorizationCredentials = Security(_security)):
-    if not _API_TOKEN:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="API_TOKEN environment variable is not set"
-        )
-    if not secrets.compare_digest(credentials.credentials.encode(), _API_TOKEN.encode()):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or missing token",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
 
 
 # --- Define environment ---
@@ -91,14 +63,11 @@ _lock = threading.Lock()
 class RecommendationRequest(BaseModel):
     event: dict
     context: dict
-    cognitive_snapshot: Optional[dict] = None
 
 app = FastAPI()
 
-@app.post("/api/v1/recommendation", dependencies=[Depends(verify_token)])
+@app.post("/api/v1/recommendation")
 def get_recommendation(request: RecommendationRequest):
-    logger.info("Received recommendation request for event %s", request.event.get("event_type"))
-
     with _lock:
         # Get recommendations from the GNN agent: the first one is the action the
         # agent itself would take, the others come from continuing its search
@@ -107,8 +76,6 @@ def get_recommendation(request: RecommendationRequest):
                                           n_recommendations=n_recommendations,
                                           extra_simulation_budget=extra_simulation_budget)
         result = [get_parade_info(reco["action"], obs) for reco in recommendations]
-
-    logger.info("Recommended actions %s", [reco["action_id"] for reco in recommendations])
     return result
 
 

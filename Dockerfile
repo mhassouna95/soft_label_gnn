@@ -1,9 +1,7 @@
 # SoftGNN agent API for InteractiveAI.
 #
-#   docker compose up --build                  (uses .env, see .env.example)
-# or
 #   docker build -t softgnn-agent-api .
-#   docker run -p 8000:8000 -e API_TOKEN=<token> softgnn-agent-api
+#   docker run -p 8000:8000 softgnn-agent-api
 
 # lightsim2grid publishes no Linux arm64 wheels, so the image is always built
 # for amd64. Apple Silicon machines run it through emulation.
@@ -50,5 +48,5 @@ ENV GRID2OP_ENV=/root/data_grid2op/ai4realnet_small
 
 EXPOSE 8000
 
-# Pass API_TOKEN at runtime: docker run -e API_TOKEN=<your_token> ...
+# Run server
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

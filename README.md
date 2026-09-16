@@ -100,8 +100,6 @@ modern stack (verified on NumPy 2.3.5 / scikit-learn 1.9), so either works.
 ├── get_seed_gnn_array.py             # Stage 4: 20-seed evaluation of the GNN agent
 ├── get_seed_greedy_array.py          # Stage 4: 20-seed evaluation of the greedy expert
 ├── Dockerfile                        # Container image of the InteractiveAI API
-├── docker-compose.yml                # Runs the API image (reads .env)
-├── .env.example                      # Template for .env (API token, port)
 ├── requirements.txt                  # Research pipeline (training, evaluation)
 └── requirements_docker.txt           # InteractiveAI API (Python 3.12)
 ```
@@ -224,6 +222,10 @@ while not done:
 InteractiveAI sends the grid observation of a critical event and gets back actions to show the
 operator.
 
+> **Sandbox use only.** Like ExpertAgent's `docker` branch, the API has no authentication: anyone who
+> can reach its port gets recommendations. It is meant for demonstration sandboxes, not for
+> deployment on shared or production networks.
+
 ### How recommendations are chosen
 
 The API calls `GNNAgent.recommend()`, which runs the agent's normal search:
@@ -241,12 +243,13 @@ the grid is already below the threshold, the single action the agent would take 
 ### Run with Docker
 
 ```bash
-cp .env.example .env          # set API_TOKEN, e.g. to the output of: openssl rand -hex 32
-docker compose up --build
+docker build -t softgnn-agent-api .
+docker run -p 8000:8000 softgnn-agent-api
 ```
 
-The API is published on `http://localhost:5124` (change `AGENT_PORT` in `.env`). The environment
-and model load when the service starts, so it accepts requests only once loading is done.
+The API is then available on `http://localhost:8000`. If another agent, such as ExpertAgent, already
+uses that port, publish on a different one, e.g. `-p 5124:8000`. The environment and model load when
+the service starts, so it accepts requests only once loading is done.
 
 The image is built for `linux/amd64`, because `lightsim2grid` has no Linux arm64 wheels. On an Apple
 Silicon Mac it runs under emulation, which is slower; run without Docker there for faster responses.
@@ -261,22 +264,20 @@ pip install -r requirements_docker.txt
 
 git clone https://github.com/AI4REALNET/grid2op-scenario.git ../grid2op-scenario
 
-API_TOKEN=<token> GRID2OP_ENV=../grid2op-scenario/ai4realnet_small \
+GRID2OP_ENV=../grid2op-scenario/ai4realnet_small \
     uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
 ### Request recommendations
 
 ```bash
-curl -X POST http://localhost:5124/api/v1/recommendation \
+curl -X POST http://localhost:8000/api/v1/recommendation \
     -H "Content-Type: application/json" \
-    -H "Authorization: Bearer $API_TOKEN" \
     --data @app/sample_request.json
 ```
 
 The request body carries the observation, as serialized by Grid2Op's `observation.to_json()`, in
-`context.observation`. `event` is required, as in ExpertAgent's API, and `cognitive_snapshot` is
-optional; the agent uses neither.
+`context.observation`. `event` is required, as in ExpertAgent's API, but not used by the agent.
 `app/sample_request.json` is the example request from ExpertAgent's integration and matches the
 `ai4realnet_small` grid.
 
@@ -300,9 +301,10 @@ simulation. Lower is better.
 
 ### Configuration
 
+Set these as environment variables, e.g. `docker run -e N_RECOMMENDATIONS=5 ...`.
+
 | Variable | Default | Meaning |
 |---|---|---|
-| `API_TOKEN` | *(required)* | Bearer token clients must send; every request fails with 500 if unset |
 | `GRID2OP_ENV` | `ai4realnet_small` | Environment name in `~/data_grid2op`, or a path to it (set in the image) |
 | `MODEL_PATH` | `data/best_model` | Directory with the Lightning checkpoint and `config.json` |
 | `ACTIONS_PATH` | `data/actions/soft_actions.npy` | Action space the model scores |
@@ -312,7 +314,6 @@ simulation. Lower is better.
 | `BEST_ACTION_THRESHOLD` | `0.95` | rho an action must reach to count as suitable |
 | `MAX_ACTION_SIM` | `2000` | Candidates simulated while looking for the first suitable action |
 | `AGENT_TYPE` | `2` | Agent identifier sent to InteractiveAI |
-| `AGENT_PORT` | `5124` | Host port used by `docker compose` |
 
 Retraining the model only requires pointing `MODEL_PATH`, `ACTIONS_PATH` and `SCALER_PATH` at the
 new artifacts.
