@@ -81,8 +81,7 @@ modern stack (verified on NumPy 2.3.5 / scikit-learn 1.9), so either works.
 │   ├── scaler_all.pkl                # Feature scaler for the GNN node features
 │   └── scaler_all.npz                # Same scaler as plain arrays (mean, scale, var)
 ├── app/                              # InteractiveAI recommendation API
-│   ├── main.py                       # FastAPI service
-│   ├── formatting.py                 # Action -> InteractiveAI recommendation payload
+│   ├── main.py                       # FastAPI service (structured like ExpertAgent's app/main.py)
 │   └── sample_request.json           # Example request (ai4realnet_small observation)
 ├── gnn/
 │   ├── gnn_models.py                 # GAT and GraphTransformer as LightningModules
@@ -246,9 +245,8 @@ cp .env.example .env          # set API_TOKEN, e.g. to the output of: openssl ra
 docker compose up --build
 ```
 
-The API is published on `http://localhost:5124` (change `AGENT_PORT` in `.env`). The first start
-takes a minute or two while the environment and model load; `GET /health` answers once the service
-is ready.
+The API is published on `http://localhost:5124` (change `AGENT_PORT` in `.env`). The environment
+and model load when the service starts, so it accepts requests only once loading is done.
 
 The image is built for `linux/amd64`, because `lightsim2grid` has no Linux arm64 wheels. On an Apple
 Silicon Mac it runs under emulation, which is slower; run without Docker there for faster responses.
@@ -277,7 +275,8 @@ curl -X POST http://localhost:5124/api/v1/recommendation \
 ```
 
 The request body carries the observation, as serialized by Grid2Op's `observation.to_json()`, in
-`context.observation`. `event` and `cognitive_snapshot` are accepted but not used by the agent.
+`context.observation`. `event` is required, as in ExpertAgent's API, and `cognitive_snapshot` is
+optional; the agent uses neither.
 `app/sample_request.json` is the example request from ExpertAgent's integration and matches the
 `ai4realnet_small` grid.
 

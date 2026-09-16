@@ -1,170 +1,48 @@
-"""InteractiveAI recommendation API for the SoftGNN agent.
-
-InteractiveAI posts the grid context of a critical event. The API restores the
-Grid2Op observation it contains, lets the agent propose up to
-``N_RECOMMENDATIONS`` actions, and returns them in InteractiveAI's
-recommendation format.
-
-Run from the repository root:
-
-    API_TOKEN=<token> GRID2OP_ENV=<path to ai4realnet_small> \\
-        uvicorn app.main:app --host 0.0.0.0 --port 8000
-
-Request recommendations:
-
-    curl -X POST http://localhost:8000/api/v1/recommendation \\
-        -H "Content-Type: application/json" \\
-        -H "Authorization: Bearer $API_TOKEN" \\
-        --data @app/sample_request.json
-"""
-import logging
+# command to execute the API
+# API_TOKEN=mysecrettoken GRID2OP_ENV=<path to ai4realnet_small> uvicorn app.main:app --host 0.0.0.0 --port 8000
+# Command to request a recommendation from server
+# curl -X POST http://localhost:8000/api/v1/recommendation -H "Content-Type: application/json" -H "Authorization: Bearer $API_TOKEN" --data @app/sample_request.json
+# docker build -t softgnn-agent-api .
+# docker run -p 8000:8000 -e API_TOKEN=mysecrettoken softgnn-agent-api
+# docker run --rm -it --entrypoint bash softgnn-agent-api
 import os
 import pickle
 import secrets
+import logging
 import threading
-import time
-from contextlib import asynccontextmanager
-from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import Optional
+from fastapi import FastAPI, Depends, HTTPException, Security, status
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from pydantic import BaseModel
+import numpy as np
 
 import grid2op
-from fastapi import Depends, FastAPI, HTTPException, Request, Security, status
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from grid2op.Observation import CompleteObservation
 from lightsim2grid import LightSimBackend
-from pydantic import BaseModel, Field
 
 from GNNAgent import GNNAgent
-from app.formatting import format_recommendation
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+# --- Logging (goes to stdout -> visible via `docker logs`) ---
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
 logger = logging.getLogger("softgnn-agent-api")
 
+# --- Authentication ---
+_security = HTTPBearer()
+_API_TOKEN = os.environ.get("API_TOKEN", "")
 
-@dataclass(frozen=True)
-class Settings:
-    """Service configuration, read from environment variables."""
-
-    grid2op_env: str
-    model_path: Path
-    actions_path: Path
-    scaler_path: Path
-    n_recommendations: int
-    extra_simulation_budget: int
-    best_action_threshold: float
-    max_action_sim: int
-    agent_type: int
-
-    @classmethod
-    def from_env(cls) -> "Settings":
-        env = os.environ.get
-        return cls(
-            grid2op_env=env("GRID2OP_ENV", "ai4realnet_small"),
-            model_path=Path(env("MODEL_PATH", PROJECT_ROOT / "data" / "best_model")),
-            actions_path=Path(env("ACTIONS_PATH", PROJECT_ROOT / "data" / "actions" / "soft_actions.npy")),
-            scaler_path=Path(env("SCALER_PATH", PROJECT_ROOT / "data" / "scaler_all.pkl")),
-            n_recommendations=int(env("N_RECOMMENDATIONS", 3)),
-            extra_simulation_budget=int(env("EXTRA_SIMULATION_BUDGET", 300)),
-            best_action_threshold=float(env("BEST_ACTION_THRESHOLD", 0.95)),
-            max_action_sim=int(env("MAX_ACTION_SIM", 2000)),
-            agent_type=int(env("AGENT_TYPE", 2)),
-        )
-
-
-class InvalidObservation(ValueError):
-    """The request's observation does not belong to the grid the agent runs on."""
-
-
-class AgentService:
-    """Holds the Grid2Op environment and the agent and answers requests.
-
-    The agent and the observation object are reused across requests and are
-    not safe to use from several threads at once, so requests are handled one
-    at a time.
-    """
-
-    def __init__(self, settings: Settings):
-        self.settings = settings
-
-        logger.info("Loading Grid2Op environment %s", settings.grid2op_env)
-        self.env = grid2op.make(settings.grid2op_env, backend=LightSimBackend(),
-                                observation_class=CompleteObservation)
-
-        with open(settings.scaler_path, "rb") as fp:
-            scaler = pickle.load(fp)
-
-        logger.info("Loading agent from %s", settings.model_path)
-        self.agent = GNNAgent(
-            action_space=self.env.action_space,
-            model_path=settings.model_path,
-            action_space_file=settings.actions_path,
-            best_action_threshold=settings.best_action_threshold,
-            scaler=scaler,
-            topo=True,
-            max_action_sim=settings.max_action_sim,
-        )
-
-        self.observation = self.env.reset()
-        self._expected_sizes = {"rho": self.env.n_line, "topo_vect": self.env.dim_topo,
-                                "load_p": self.env.n_load, "gen_p": self.env.n_gen}
-        self._lock = threading.Lock()
-        logger.info("Agent ready")
-
-    def recommend(self, observation_json: dict) -> List[dict]:
-        """Propose recommendations for an observation serialized by Grid2Op's to_json."""
-        for key, size in self._expected_sizes.items():
-            values = observation_json.get(key)
-            if not isinstance(values, list) or len(values) != size:
-                raise InvalidObservation(
-                    f"context.observation['{key}'] must be a list of {size} values for this grid")
-
-        with self._lock:
-            try:
-                self.observation.from_json(observation_json)
-            except Exception as e:
-                raise InvalidObservation(f"context.observation could not be restored: {e}") from e
-
-            start = time.perf_counter()
-            proposals = self.agent.recommend(
-                self.observation,
-                n_recommendations=self.settings.n_recommendations,
-                extra_simulation_budget=self.settings.extra_simulation_budget,
-            )
-            recommendations = [
-                format_recommendation(proposal["action"], self.observation, self.settings.agent_type)
-                for proposal in proposals
-            ]
-
-        logger.info("rho.max %.4f -> %d recommendation(s) in %.2fs: %s",
-                    self.observation.rho.max(), len(recommendations), time.perf_counter() - start,
-                    ", ".join(f"action {p['action_id']} (rank {p['rank']}, rho {p['simulated_rho']:.4f})"
-                              for p in proposals))
-        return recommendations
-
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    app.state.service = AgentService(Settings.from_env())
-    yield
-
-
-app = FastAPI(title="SoftGNN agent API", lifespan=lifespan)
-
-_bearer = HTTPBearer()
-
-
-def verify_token(credentials: HTTPAuthorizationCredentials = Security(_bearer)) -> None:
-    """Accept only requests carrying the bearer token set in API_TOKEN."""
-    expected = os.environ.get("API_TOKEN", "")
-    if not expected:
+def verify_token(credentials: HTTPAuthorizationCredentials = Security(_security)):
+    if not _API_TOKEN:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="API_TOKEN environment variable is not set",
+            detail="API_TOKEN environment variable is not set"
         )
-    if not secrets.compare_digest(credentials.credentials.encode(), expected.encode()):
+    if not secrets.compare_digest(credentials.credentials.encode(), _API_TOKEN.encode()):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or missing token",
@@ -172,30 +50,227 @@ def verify_token(credentials: HTTPAuthorizationCredentials = Security(_bearer)) 
         )
 
 
-class RecommendationRequest(BaseModel):
-    """Payload InteractiveAI sends when an operator asks for recommendations."""
+# --- Define environment ---
+# Name of an environment in ~/data_grid2op, or a path to it
+env_name = os.environ.get("GRID2OP_ENV", "ai4realnet_small")
 
-    event: dict = Field(default_factory=dict)
+env = grid2op.make(env_name,
+                   backend=LightSimBackend(),
+                   observation_class=CompleteObservation
+                   )
+obs = env.reset()
+
+# --- Agent parameters and load path ---
+model_path = Path(os.environ.get("MODEL_PATH", PROJECT_ROOT / "data" / "best_model"))
+actions_path = Path(os.environ.get("ACTIONS_PATH", PROJECT_ROOT / "data" / "actions" / "soft_actions.npy"))
+scaler_path = Path(os.environ.get("SCALER_PATH", PROJECT_ROOT / "data" / "scaler_all.pkl"))
+
+best_action_threshold = float(os.environ.get("BEST_ACTION_THRESHOLD", 0.95))
+max_action_sim = int(os.environ.get("MAX_ACTION_SIM", 2000))
+n_recommendations = int(os.environ.get("N_RECOMMENDATIONS", 3))
+extra_simulation_budget = int(os.environ.get("EXTRA_SIMULATION_BUDGET", 300))
+agent_type = int(os.environ.get("AGENT_TYPE", 2))
+
+with open(scaler_path, "rb") as fp:
+    scaler = pickle.load(fp)
+
+# --- GNN Agent instanciation ---
+agent = GNNAgent(action_space=env.action_space,
+                 model_path=model_path,
+                 action_space_file=actions_path,
+                 best_action_threshold=best_action_threshold,
+                 scaler=scaler,
+                 topo=True,
+                 max_action_sim=max_action_sim
+                 )
+
+# obs and agent are shared by all requests and are not thread-safe
+_lock = threading.Lock()
+
+# --- API Schema ---
+class RecommendationRequest(BaseModel):
+    event: dict
     context: dict
     cognitive_snapshot: Optional[dict] = None
 
-
-@app.get("/health")
-def health() -> dict:
-    return {"status": "ok"}
-
+app = FastAPI()
 
 @app.post("/api/v1/recommendation", dependencies=[Depends(verify_token)])
-def get_recommendation(payload: RecommendationRequest, request: Request) -> List[dict]:
-    observation = payload.context.get("observation")
-    if not isinstance(observation, dict):
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="context.observation must be a Grid2Op observation serialized as JSON",
+def get_recommendation(request: RecommendationRequest):
+    logger.info("Received recommendation request for event %s", request.event.get("event_type"))
+
+    with _lock:
+        # Get recommendations from the GNN agent: the first one is the action the
+        # agent itself would take, the others come from continuing its search
+        obs.from_json(request.context.get("observation"))
+        recommendations = agent.recommend(obs,
+                                          n_recommendations=n_recommendations,
+                                          extra_simulation_budget=extra_simulation_budget)
+        result = [get_parade_info(reco["action"], obs) for reco in recommendations]
+
+    logger.info("Recommended actions %s", [reco["action_id"] for reco in recommendations])
+    return result
+
+
+def get_parade_info(act, obs):
+    """Compile unitary recomendation in json format for InteractiveAI's frontend compliance
+
+    Adapted from ExpertAgent's app/main.py (https://github.com/ainetus/T2.1_deep_expert, MPL-2.0).
+    Recommendations combining several parts (e.g. a topology change plus a line reconnection)
+    get their titles and descriptions separated by "; ", and topology actions that only switch
+    or disconnect elements no longer fail.
+
+    Args:
+        act (): Unitary action object
+        obs (): Observation the action is recommended for
+
+    Returns:
+        dict: Recomendations data in json format
+    """
+    kpis = {}
+    title = []
+    description = []
+    impact = act.impact_on_objects()
+
+    # redispatch
+    if impact["redispatch"]["changed"]:
+        kpis["type_of_the_reco"] = (
+            "Redispatch"  # pour renvoyer le kpi type_of_the_reco
+        )
+        title.append(
+            "Injection recommendation: production source redispatch"
+        )
+        description.append(", ".join(
+            f'"{gen["gen_name"]}" de {gen["amount"]:.2f} MW'
+            for gen in impact["redispatch"]["generators"]
+        ))
+
+    # storage
+    if impact["storage"]["changed"]:
+        kpis["type_of_the_reco"] = (
+            "Storage"  # pour renvoyer le kpi type_of_the_reco
+        )
+        title.append("Storage recommendation")
+        description.append(", ".join(
+            f'Ask unit "{unit["storage_name"]}" to '
+            f'{"charge" if unit["new_capacity"] > 0.0 else "discharge"} '
+            f'{abs(unit["new_capacity"]):.2f} MW (setpoint: {unit["new_capacity"]:.2f} MW)'
+            for unit in impact["storage"]["capacities"]
+            if np.isfinite(unit["new_capacity"]) and unit["new_capacity"] != 0.0
+        ))
+
+    # curtailment
+    if impact["curtailment"]["changed"]:
+        kpis["type_of_the_reco"] = (
+            "Injection"  # pour renvoyer le kpi type_of_the_reco
+        )
+        title.append("Injection recommendation")
+        description.append(", ".join(
+            f'Limit unit "{gen["generator_name"]}" to '
+            f'{100.0 * gen["amount"]:.1f}% of its maximum capacity '
+            f'(setpoint: {gen["amount"]:.3f})'
+            for gen in impact["curtailment"]["limit"]
+        ))
+
+    # force line status
+    force_line_impact = impact["force_line"]
+    if force_line_impact["changed"]:
+        kpis["type_of_the_reco"] = (
+            "Topological"  # pour renvoyer le kpi type_of_the_reco
+        )
+        title.append(
+            "Topological recommendation: connection/disconnection of line"
+        )
+        reconnections = force_line_impact["reconnections"]
+        if reconnections["count"] > 0:
+            description.append(
+                f"Reconnection of {reconnections['count']} lines "
+                f"({reconnections['powerlines'].tolist()})"
+            )
+
+        disconnections = force_line_impact["disconnections"]
+        if disconnections["count"] > 0:
+            description.append(
+                f"Disconnection of {disconnections['count']} lines "
+                f"({disconnections['powerlines'].tolist()})"
+            )
+
+    # swtich line status
+    swith_line_impact = impact["switch_line"]
+    if swith_line_impact["changed"]:
+        kpis["type_of_the_reco"] = (
+            "Topological"  # pour renvoyer le kpi type_of_the_reco
+        )
+        title.append("Topological: change a line state")
+        description.append(
+            f"Change the state of {swith_line_impact['count']} lines "
+            f"({swith_line_impact['powerlines'].tolist()})"
         )
 
-    logger.info("Recommendation requested for event %s", payload.event.get("event_type", "<unspecified>"))
-    try:
-        return request.app.state.service.recommend(observation)
-    except InvalidObservation as e:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e)) from e
+    # topology
+    bus_switch_impact = impact["topology"]["bus_switch"]
+    if len(bus_switch_impact) > 0:
+        kpis["type_of_the_reco"] = (
+            "Topological"  # pour renvoyer le kpi type_of_the_reco
+        )
+        title.append(
+            "Topological recommendation: Schematic acquisition at substation "
+            + str(bus_switch_impact[0]["substation"])
+        )
+        description.append("Busbar change:" + "".join(
+            f"\t \t - Switch bus of {switch['object_type']} id "
+            f"{switch['object_id']} [at station {switch['substation']}]"
+            for switch in bus_switch_impact
+        ))
+
+    assigned_bus_impact = impact["topology"]["assigned_bus"]
+    disconnect_bus_impact = impact["topology"]["disconnect_bus"]
+    if len(assigned_bus_impact) > 0 or len(disconnect_bus_impact) > 0:
+        kpis["type_of_the_reco"] = (
+            "Topological"  # pour renvoyer le kpi type_of_the_reco
+        )
+        title.append(
+            "Topological recommendation: Schematic acquisition at substation "
+            + str((assigned_bus_impact or disconnect_bus_impact)[0]["substation"])
+        )
+        description.append(", ".join(
+            [f" Assign bus {assigned['bus']} to "
+             f"{assigned['object_type']} id {assigned['object_id']}"
+             for assigned in assigned_bus_impact]
+            + [f"Disconnect {disconnected['object_type']} with id "
+               f"{disconnected['object_id']} [at the substation level "
+               f"{disconnected['substation']}]"
+               for disconnected in disconnect_bus_impact]
+        ))
+
+    # Any of the above cases,
+    # then the recommendation is most likely "Do nothing"
+    if not title and not impact["has_impact"]:
+        kpis["type_of_the_reco"] = (
+            "Do nothing"  # pour renvoyer le kpi type_of_the_reco
+        )
+        title.append("Poursuivre")
+        description.append(
+            "Continuation of the scenario without operator action"
+        )
+
+    title = "; ".join(title)
+    description = "; ".join(description)
+
+    if title:
+        obs_simulate, _, done, _ = (
+            obs.simulate(act, time_step=1)
+        )
+        # A simulation that ends the episode has no meaningful rho
+        kpis["efficiency_of_the_reco"] = None if done else float(
+            np.float32(obs_simulate.rho.max())
+        )  # pour renvoyer le kpi efficiency_of_the_reco
+
+    return {
+        "title": title,
+        "description": description,
+        "use_case": "PowerGrid",
+        "agent_type": agent_type,
+        "actions": [act.to_json()],
+        "kpis": kpis,
+    }
