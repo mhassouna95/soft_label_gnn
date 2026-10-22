@@ -40,6 +40,7 @@ scaler_path = Path(os.environ.get("SCALER_PATH", PROJECT_ROOT / "data" / "scaler
 
 best_action_threshold = float(os.environ.get("BEST_ACTION_THRESHOLD", 0.95))
 max_action_sim = int(os.environ.get("MAX_ACTION_SIM", 2000))
+n_recommendations = int(os.environ.get("N_RECOMMENDATIONS", 3))
 agent_type = int(os.environ.get("AGENT_TYPE", 2))
 
 with open(scaler_path, "rb") as fp:
@@ -74,14 +75,39 @@ def get_recommendation(request: RecommendationRequest):
     }
 
     with _lock:
-        # Get recommendation from GNN agent
+        # Get recommendations from the GNN agent: the first one is the action the
+        # agent itself would take, the others continue its search
         obs.from_json(observation.get("context", {}).get("observation"))
         use_current_injections(obs)
-        action = agent.act(obs, reward=None, done=False)
-        result = get_parade_info(action, obs)
-    if result is not list:
-        result = [result]
-    return result
+        recommendations = agent.recommend(obs, n_recommendations=n_recommendations)
+        result = [get_parade_info(reco["action"], obs) for reco in recommendations]
+    return disambiguate_titles(result)
+
+
+def disambiguate_titles(recommendations):
+    """Make the titles of a recommendation list unique
+
+    InteractiveAI's frontend identifies recommendations by title, and unitary topology actions
+    on the same substation share one, so repeated titles get an "(option N)" suffix. A list
+    whose titles already differ is returned unchanged.
+
+    Args:
+        recommendations (): Recommendations in json format, best first
+
+    Returns:
+        list[dict]: The same list, with unique titles
+    """
+    used = set()
+    for recommendation in recommendations:
+        title = recommendation["title"]
+        if title in used:
+            option = 2
+            while f"{title} (option {option})" in used:
+                option += 1
+            title = f"{title} (option {option})"
+            recommendation["title"] = title
+        used.add(title)
+    return recommendations
 
 
 def use_current_injections(obs):

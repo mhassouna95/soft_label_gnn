@@ -242,6 +242,104 @@ class GNNAgent(BaseAgent):
 
         return next_action,idx_chosen
 
+    def recommend(
+            self,
+            observation: grid2op.Observation.BaseObservation,
+            n_recommendations: int = 3,
+    ) -> List[dict]:
+        """Propose several suitable actions for a single observation.
+
+        The model ranking is simulated in order, exactly as :meth:`act_with_id` does, but the
+        search does not stop at the first suitable action: it continues until
+        ``n_recommendations`` actions reaching ``best_action_threshold`` have been collected or
+        the ranking (at most ``max_action_sim`` candidates) is exhausted. The first entry is
+        therefore the action :meth:`act_with_id` would take.
+
+        If fewer than ``n_recommendations`` actions reach the threshold, the whole ranking has
+        been simulated anyway, so the candidates reducing rho the most fill the remaining slots.
+
+        Unlike :meth:`act_with_id` this method keeps no state between calls, so it is safe for
+        serving independent requests.
+
+        Args:
+            observation: Grid2Op observation.
+            n_recommendations: Maximum number of actions to propose.
+
+        Returns:
+            A list of dicts, best first. Each holds the Grid2Op ``action``, its ``action_id`` and
+            ``rank`` in the model ranking, the ``simulated_rho`` it achieves and whether it met
+            the threshold (``suitable``).
+
+        """
+        baseline = float(observation.rho.max())
+
+        # case: secure with low threshold, as in act_with_id
+        if baseline < self.best_action_threshold:
+            if self.topo:
+                default_action = self.action_space.from_vect(
+                    revert_topo(self.action_space, observation, rho_limit=0.8))
+            else:
+                default_action = self.action_space({})
+            default_action = find_best_line_to_reconnect(obs=observation,
+                                                         original_action=default_action)
+            return [{"action": default_action, "action_id": -1, "rank": -1,
+                     "simulated_rho": baseline, "suitable": True}]
+
+        # Now, case dangerous:
+        sorted_actions = self.__get_actions(obs=observation)[:self.max_action_sim]
+
+        suitable, improving = [], []
+
+        # Simulate the ranking in order until enough suitable actions are collected, or until
+        # there is nothing left to simulate. Candidates that help without reaching the
+        # threshold are kept, in case there are too few suitable ones.
+        for rank, idx in enumerate(sorted_actions):
+            rho_max, valid_action = simulate_action(action_space=self.action_space, obs=observation,
+                                                    action_vect=self.actions[idx, :],
+                                                    check_overload=self.check_overload
+                                                    )
+
+            self.total_simulation_times += 1
+
+            if not valid_action:
+                continue
+
+            self.total_valid_simulation_times += 1
+            candidate = {"action_id": int(idx), "rank": rank, "simulated_rho": float(rho_max)}
+
+            if rho_max <= self.best_action_threshold:
+                suitable.append(candidate)
+                if len(suitable) >= n_recommendations:
+                    break
+            elif rho_max < baseline:
+                improving.append(candidate)
+
+        logging.info(f"finished action search, {len(suitable)} suitable and {len(improving)} "
+                     f"improving candidate(s), total simulations so far: "
+                     f"{self.total_simulation_times}")
+
+        # Suitable candidates keep the ranking order, so the agent's own choice stays first.
+        # Any remaining slots are filled with the candidates that push rho down the most.
+        chosen = suitable + sorted(improving, key=lambda c: c["simulated_rho"])
+
+        recommendations = []
+        for candidate in chosen[:n_recommendations]:
+            action = next(split_action_and_return(
+                observation, self.action_space, self.actions[candidate["action_id"], :]))
+            candidate["action"] = find_best_line_to_reconnect(obs=observation,
+                                                              original_action=action)
+            candidate["suitable"] = candidate["simulated_rho"] <= self.best_action_threshold
+            recommendations.append(candidate)
+
+        if not recommendations:
+            # Nothing helped at all, so fall back to do-nothing as act_with_id does.
+            recommendations.append(
+                {"action": find_best_line_to_reconnect(obs=observation,
+                                                       original_action=self.action_space({})),
+                 "action_id": -1, "rank": -1, "simulated_rho": baseline, "suitable": False})
+
+        return recommendations
+
     def act( self, observation: grid2op.Observation.BaseObservation, reward: float, done: bool)\
             -> grid2op.Action.BaseAction:
         """Method of the agent to act.

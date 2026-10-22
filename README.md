@@ -226,21 +226,27 @@ operator.
 > can reach its port gets recommendations. It is meant for demonstration sandboxes, not for
 > deployment on shared or production networks.
 
-### How the recommendation is chosen
+### How the recommendations are chosen
 
-The API returns one recommendation: the action `GNNAgent.act()` takes, exactly as the standalone
-agent does.
+The API returns up to `N_RECOMMENDATIONS` (3) recommendations, best first. The first one is the
+action `GNNAgent.act()` takes, exactly as the standalone agent does; the others are alternatives
+the operator can pick instead.
 
 1. The GNN ranks all 2000 actions for the observation.
-2. Actions are simulated in ranking order, up to `MAX_ACTION_SIM` (2000), until one brings the
-   maximum line loading (rho) to `BEST_ACTION_THRESHOLD` (0.95) or below.
+2. Actions are simulated in ranking order, up to `MAX_ACTION_SIM` (2000), collecting those that
+   bring the maximum line loading (rho) to `BEST_ACTION_THRESHOLD` (0.95) or below. The search
+   stops once `N_RECOMMENDATIONS` have been collected, or when the ranking is exhausted.
 
 InteractiveAI sends no forecasts, so every simulation uses the loads and generation of the
 observation in the request.
 
-If no action reaches the threshold, the one that lowered rho the most is recommended, or doing
-nothing if none helped. When the grid is already below the threshold, the agent recommends reverting
-to the reference topology where possible.
+If too few actions reach the threshold, the remaining slots are filled with the actions that
+lowered rho the most, or a single do-nothing recommendation if none helped. When the grid is
+already below the threshold, the agent recommends reverting to the reference topology where
+possible.
+
+InteractiveAI's frontend identifies recommendations by title, and unitary topology actions on the
+same substation share one, so repeated titles get an `(option N)` suffix.
 
 ### Run with Docker
 
@@ -283,7 +289,7 @@ The request body carries the observation, as serialized by Grid2Op's `observatio
 `app/sample_request.json` is the example request from ExpertAgent's integration and matches the
 `ai4realnet_small` grid.
 
-The response is a list with a single recommendation:
+The response is a list of recommendations, best first:
 
 ```json
 [
@@ -294,6 +300,22 @@ The response is a list with a single recommendation:
     "agent_type": 2,
     "actions": [{"_set_topo_vect": [...], "...": "..."}],
     "kpis": {"type_of_the_reco": "Topological", "efficiency_of_the_reco": 1.0274}
+  },
+  {
+    "title": "Topological recommendation: Schematic acquisition at substation 23 (option 2)",
+    "description": "Assign bus 1 to line (extremity) id 30, Assign bus 2 to line (extremity) id 31, ...",
+    "use_case": "PowerGrid",
+    "agent_type": 2,
+    "actions": [{"_set_topo_vect": [...], "...": "..."}],
+    "kpis": {"type_of_the_reco": "Topological", "efficiency_of_the_reco": 1.0274}
+  },
+  {
+    "title": "Topological recommendation: Schematic acquisition at substation 23 (option 3)",
+    "description": "Assign bus 1 to line (extremity) id 30, Assign bus 1 to line (extremity) id 31, ...",
+    "use_case": "PowerGrid",
+    "agent_type": 2,
+    "actions": [{"_set_topo_vect": [...], "...": "..."}],
+    "kpis": {"type_of_the_reco": "Topological", "efficiency_of_the_reco": 1.0280}
   }
 ]
 ```
@@ -313,6 +335,7 @@ Set these as environment variables, e.g. `docker run -e MAX_ACTION_SIM=500 ...`.
 | `SCALER_PATH` | `data/scaler_all.pkl` | Feature scaler used at training time |
 | `BEST_ACTION_THRESHOLD` | `0.95` | rho an action must reach to count as suitable |
 | `MAX_ACTION_SIM` | `2000` | Candidates simulated while looking for a suitable action |
+| `N_RECOMMENDATIONS` | `3` | Maximum number of recommendations returned per request |
 | `AGENT_TYPE` | `2` | Agent identifier sent to InteractiveAI |
 
 Retraining the model only requires pointing `MODEL_PATH`, `ACTIONS_PATH` and `SCALER_PATH` at the
