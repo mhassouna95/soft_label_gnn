@@ -5,13 +5,14 @@
 # docker build -t softgnn-agent-api .
 # docker run -p 8000:8000 softgnn-agent-api
 # docker run --rm -it --entrypoint bash softgnn-agent-api
+import logging
 import os
 import pickle
 import threading
 from datetime import timedelta
 from pathlib import Path
 from fastapi import FastAPI
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import numpy as np
 
 import grid2op
@@ -21,6 +22,10 @@ from lightsim2grid import LightSimBackend
 from GNNAgent import GNNAgent
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+# The root logger is at WARNING by default, which would drop every logging.info of the
+# API and of the agent
+logging.basicConfig(level=logging.INFO)
 
 
 # --- Define environment ---
@@ -40,7 +45,15 @@ scaler_path = Path(os.environ.get("SCALER_PATH", PROJECT_ROOT / "data" / "scaler
 
 best_action_threshold = float(os.environ.get("BEST_ACTION_THRESHOLD", 0.95))
 max_action_sim = int(os.environ.get("MAX_ACTION_SIM", 2000))
+n_recommendations_low = int(os.environ.get("N_RECOMMENDATIONS_LOW", 1))
+# Also the number proposed when the request carries no usable task capacity
 n_recommendations = int(os.environ.get("N_RECOMMENDATIONS", 3))
+n_recommendations_optimal = int(os.environ.get("N_RECOMMENDATIONS_OPTIMAL", 20))
+
+# INESC TEC's working capacity levels: below NORMAL_MIN the operator has a low working
+# capacity, from OPTIMAL_MIN an optimal one, and a normal one in between
+task_capacity_normal_min = float(os.environ.get("TASK_CAPACITY_NORMAL_MIN", 40))
+task_capacity_optimal_min = float(os.environ.get("TASK_CAPACITY_OPTIMAL_MIN", 75))
 agent_type = int(os.environ.get("AGENT_TYPE", 2))
 
 with open(scaler_path, "rb") as fp:
@@ -63,6 +76,9 @@ _lock = threading.Lock()
 class RecommendationRequest(BaseModel):
     event: dict
     context: dict
+    # Operator cognitive state, sent by InteractiveAI when the operator has consented. See
+    # recommendation_count, which reads the task capacity from it.
+    cognitive_snapshot: dict = Field(default_factory=dict)
 
 app = FastAPI()
 
@@ -74,14 +90,59 @@ def get_recommendation(request: RecommendationRequest):
         "context": request.context,
     }
 
+    # How many options the operator's working capacity calls for
+    count = recommendation_count(request.cognitive_snapshot)
+
     with _lock:
         # Get recommendations from the GNN agent: the first one is the action the
         # agent itself would take, the others continue its search
         obs.from_json(observation.get("context", {}).get("observation"))
         use_current_injections(obs)
-        recommendations = agent.recommend(obs, n_recommendations=n_recommendations)
+        recommendations = agent.recommend(obs, n_recommendations=count)
         result = [get_parade_info(reco["action"], obs) for reco in recommendations]
     return result
+
+
+def recommendation_count(cognitive_snapshot):
+    """How many recommendations to propose, from the operator's task capacity
+
+    The task capacity is a score of how much the operator can take on, measured by INESC TEC
+    and sent by InteractiveAI in the cognitive snapshot. A low working capacity gets a single
+    recommendation, a normal one N_RECOMMENDATIONS, an optimal one N_RECOMMENDATIONS_OPTIMAL.
+
+    The snapshot is only sent when the operator has consented to it, each of its factors is
+    null when the cognitive API has no value for it, and the values are strings. Without a
+    usable task capacity the number for a normal working capacity is proposed.
+
+    Args:
+        cognitive_snapshot (): Operator cognitive state, empty when not consented
+
+    Returns:
+        int: How many recommendations to propose at most
+    """
+    value = (cognitive_snapshot.get("task_capacity") or {}).get("value")
+    if value is None:
+        logging.info("No task capacity in the request, proposing up to %d recommendation(s)",
+                     n_recommendations)
+        return n_recommendations
+
+    try:
+        task_capacity = float(value)
+    except (TypeError, ValueError):
+        logging.info("Task capacity %r is not a number, proposing up to %d recommendation(s)",
+                     value, n_recommendations)
+        return n_recommendations
+
+    if task_capacity < task_capacity_normal_min:
+        level, count = "Low working capacity", n_recommendations_low
+    elif task_capacity < task_capacity_optimal_min:
+        level, count = "Normal working capacity", n_recommendations
+    else:
+        level, count = "Optimal working capacity", n_recommendations_optimal
+
+    logging.info("Task capacity %s: %s, proposing up to %d recommendation(s)",
+                 value, level, count)
+    return count
 
 
 def use_current_injections(obs):

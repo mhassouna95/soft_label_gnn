@@ -228,14 +228,15 @@ operator.
 
 ### How the recommendations are chosen
 
-The API returns up to `N_RECOMMENDATIONS` (3) recommendations, best first. The first one is the
-action `GNNAgent.act()` takes, exactly as the standalone agent does; the others are alternatives
-the operator can pick instead.
+The API returns several recommendations, best first. The first one is the action
+`GNNAgent.act()` takes, exactly as the standalone agent does; the others are alternatives the
+operator can pick instead. How many are proposed follows the operator's working capacity, see
+"Adapting to the operator" below.
 
 1. The GNN ranks all 2000 actions for the observation.
 2. Actions are simulated in ranking order, up to `MAX_ACTION_SIM` (2000), collecting those that
    bring the maximum line loading (rho) to `BEST_ACTION_THRESHOLD` (0.95) or below. The search
-   stops once `N_RECOMMENDATIONS` have been collected, or when the ranking is exhausted.
+   stops once enough have been collected, or when the ranking is exhausted.
 
 InteractiveAI sends no forecasts, so every simulation uses the loads and generation of the
 observation in the request.
@@ -248,6 +249,23 @@ possible.
 Several of these actions can act on the same substation and therefore share a title. InteractiveAI
 tells recommendations apart by title and numbers the repeats itself, so the titles are left as
 `get_parade_info` writes them.
+
+### Adapting to the operator
+
+InteractiveAI sends the operator's cognitive state in the request as `cognitive_snapshot`, when
+the operator has consented to it. Its `task_capacity` is a score of how much the operator can
+take on, measured by INESC TEC, and it sets how many recommendations are proposed:
+
+| Task capacity | Working capacity | Recommendations |
+|---|---|---|
+| below `TASK_CAPACITY_NORMAL_MIN` (40) | low | `N_RECOMMENDATIONS_LOW` (1) |
+| up to `TASK_CAPACITY_OPTIMAL_MIN` (75) | normal | `N_RECOMMENDATIONS` (3) |
+| from `TASK_CAPACITY_OPTIMAL_MIN` (75) | optimal | `N_RECOMMENDATIONS_OPTIMAL` (20) |
+
+A request without a usable task capacity — no snapshot, no consent, a null factor or a value
+that is not a number — gets the number of a normal working capacity, and the reason is logged.
+The number is a maximum: fewer are returned when the action space offers fewer, and the grid
+state alone decides which actions they are.
 
 ### Run with Docker
 
@@ -336,7 +354,11 @@ Set these as environment variables, e.g. `docker run -e MAX_ACTION_SIM=500 ...`.
 | `SCALER_PATH` | `data/scaler_all.pkl` | Feature scaler used at training time |
 | `BEST_ACTION_THRESHOLD` | `0.95` | rho an action must reach to count as suitable |
 | `MAX_ACTION_SIM` | `2000` | Candidates simulated while looking for a suitable action |
-| `N_RECOMMENDATIONS` | `3` | Maximum number of recommendations returned per request |
+| `N_RECOMMENDATIONS` | `3` | Recommendations for a normal working capacity, and without a task capacity |
+| `N_RECOMMENDATIONS_LOW` | `1` | Recommendations for a low working capacity |
+| `N_RECOMMENDATIONS_OPTIMAL` | `20` | Recommendations for an optimal working capacity |
+| `TASK_CAPACITY_NORMAL_MIN` | `40` | A task capacity below this is a low working capacity |
+| `TASK_CAPACITY_OPTIMAL_MIN` | `75` | A task capacity from this on is an optimal working capacity |
 | `AGENT_TYPE` | `2` | Agent identifier sent to InteractiveAI |
 
 Retraining the model only requires pointing `MODEL_PATH`, `ACTIONS_PATH` and `SCALER_PATH` at the
