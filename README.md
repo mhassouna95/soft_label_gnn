@@ -245,8 +245,9 @@ lowered rho the most, or a single do-nothing recommendation if none helped. When
 already below the threshold, the agent recommends reverting to the reference topology where
 possible.
 
-InteractiveAI's frontend identifies recommendations by title, and unitary topology actions on the
-same substation share one, so repeated titles get an `(option N)` suffix.
+Several of these actions can act on the same substation and therefore share a title. InteractiveAI
+tells recommendations apart by title and numbers the repeats itself, so the titles are left as
+`get_parade_info` writes them.
 
 ### Run with Docker
 
