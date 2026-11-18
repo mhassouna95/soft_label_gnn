@@ -50,6 +50,11 @@ n_recommendations_low = int(os.environ.get("N_RECOMMENDATIONS_LOW", 1))
 n_recommendations = int(os.environ.get("N_RECOMMENDATIONS", 3))
 n_recommendations_optimal = int(os.environ.get("N_RECOMMENDATIONS_OPTIMAL", 20))
 
+# Proposals that act on the same substation or reach nearly the same line loading are
+# hard to tell apart, so only distinct enough ones are proposed
+max_per_substation = int(os.environ.get("MAX_PER_SUBSTATION", 2))
+min_rho_gap = float(os.environ.get("MIN_RHO_GAP", 0.005))
+
 # INESC TEC's working capacity levels: below NORMAL_MIN the operator has a low working
 # capacity, from OPTIMAL_MIN an optimal one, and a normal one in between
 task_capacity_normal_min = float(os.environ.get("TASK_CAPACITY_NORMAL_MIN", 40))
@@ -98,8 +103,18 @@ def get_recommendation(request: RecommendationRequest):
         # agent itself would take, the others continue its search
         obs.from_json(observation.get("context", {}).get("observation"))
         use_current_injections(obs)
-        recommendations = agent.recommend(obs, n_recommendations=count)
+        recommendations = agent.recommend(obs, n_recommendations=count,
+                                          max_per_substation=max_per_substation,
+                                          min_rho_gap=min_rho_gap)
         result = [get_parade_info(reco["action"], obs) for reco in recommendations]
+
+    # Best first: the operator reads the list from the top, and the ranking the actions come
+    # from says how likely they are, not how much they help
+    result.sort(key=lambda parade: (parade["kpis"].get("efficiency_of_the_reco") is None,
+                                    parade["kpis"].get("efficiency_of_the_reco") or 0.0))
+    logging.info("Proposing %d recommendation(s): %s", len(result),
+                 ", ".join(f"{parade['kpis'].get('efficiency_of_the_reco')}"
+                           for parade in result))
     return result
 
 
@@ -143,6 +158,32 @@ def recommendation_count(cognitive_snapshot):
     logging.info("Task capacity %s: %s, proposing up to %d recommendation(s)",
                  value, level, count)
     return count
+
+
+# Where an element of the grid sits in obs.topo_vect, by the object type impact_on_objects names
+ELEMENT_POSITIONS = {
+    "line (origin)": "line_or_pos_topo_vect",
+    "line (extremity)": "line_ex_pos_topo_vect",
+    "generator": "gen_pos_topo_vect",
+    "load": "load_pos_topo_vect",
+    "storage": "storage_pos_topo_vect",
+}
+
+
+def moves_element(assigned, obs):
+    """Whether an assignment puts an element on another busbar than the one it is on
+
+    Args:
+        assigned (): One entry of impact_on_objects()["topology"]["assigned_bus"]
+        obs (): Observation the action is recommended for
+
+    Returns:
+        bool: True when the element moves, and when its position cannot be told
+    """
+    positions = ELEMENT_POSITIONS.get(assigned["object_type"])
+    if positions is None:
+        return True
+    return obs.topo_vect[getattr(obs, positions)[assigned["object_id"]]] != assigned["bus"]
 
 
 def use_current_injections(obs):
@@ -289,10 +330,13 @@ def get_parade_info(act, obs):
             "Topological recommendation: Schematic acquisition at substation "
             + str((assigned_bus_impact or disconnect_bus_impact)[0]["substation"])
         )
+        # Only what the action changes: these actions set the whole substation, so listing
+        # every assignment hides the few elements that actually move
+        moved = [assigned for assigned in assigned_bus_impact if moves_element(assigned, obs)]
         description.append(", ".join(
             [f" Assign bus {assigned['bus']} to "
              f"{assigned['object_type']} id {assigned['object_id']}"
-             for assigned in assigned_bus_impact]
+             for assigned in (moved or assigned_bus_impact)]
             + [f"Disconnect {disconnected['object_type']} with id "
                f"{disconnected['object_id']} [at the substation level "
                f"{disconnected['substation']}]"

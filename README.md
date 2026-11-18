@@ -236,7 +236,19 @@ operator can pick instead. How many are proposed follows the operator's working 
 1. The GNN ranks all 2000 actions for the observation.
 2. Actions are simulated in ranking order, up to `MAX_ACTION_SIM` (2000), collecting those that
    bring the maximum line loading (rho) to `BEST_ACTION_THRESHOLD` (0.95) or below. The search
-   stops once enough have been collected, or when the ranking is exhausted.
+   stops once enough distinct ones have been collected, or when the ranking is exhausted.
+3. The recommendations are returned best first, by the line loading they reach. The action
+   `GNNAgent.act()` takes is among them, but it is the first one the ranking offers rather than
+   the one that helps most, so it is not necessarily the first proposed.
+
+Many actions of the ranking act on the same substation and leave the grid in nearly the same
+state, which makes them hard to tell apart. Only actions that differ from the ones already kept
+are proposed: at most `MAX_PER_SUBSTATION` (2) per substation, at least `MIN_RHO_GAP` (0.005)
+apart in simulated line loading, and never two that reach exactly the same loading, which are
+the same configuration. Fewer than asked for are returned when the grid offers no more.
+
+Descriptions name only the elements the action moves. These actions set a whole substation, so
+listing every assignment would hide the few elements that actually change.
 
 InteractiveAI sends no forecasts, so every simulation uses the loads and generation of the
 observation in the request.
@@ -359,6 +371,8 @@ Set these as environment variables, e.g. `docker run -e MAX_ACTION_SIM=500 ...`.
 | `N_RECOMMENDATIONS_OPTIMAL` | `20` | Recommendations for an optimal working capacity |
 | `TASK_CAPACITY_NORMAL_MIN` | `40` | A task capacity below this is a low working capacity |
 | `TASK_CAPACITY_OPTIMAL_MIN` | `75` | A task capacity from this on is an optimal working capacity |
+| `MAX_PER_SUBSTATION` | `2` | Most recommendations proposed for one substation, 0 for no limit |
+| `MIN_RHO_GAP` | `0.005` | Simulated line loading two recommendations must be apart, 0 for exact duplicates only |
 | `AGENT_TYPE` | `2` | Agent identifier sent to InteractiveAI |
 
 Retraining the model only requires pointing `MODEL_PATH`, `ACTIONS_PATH` and `SCALER_PATH` at the

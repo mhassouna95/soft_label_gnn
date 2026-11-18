@@ -21,6 +21,22 @@ from evaluation.utilities import (
 from gnn.gnn_models import GAT
 from gnn.obs_converter import collect_node_and_edge_features_separated
 
+
+def substations_of(action) -> set:
+    """The substations an action changes the topology of
+
+    Args:
+        action: A Grid2Op action.
+
+    Returns:
+        set: Their ids, empty when the action changes no topology.
+    """
+    topology = action.impact_on_objects()["topology"]
+    return {change["substation"]
+            for key in ("assigned_bus", "bus_switch", "disconnect_bus")
+            for change in topology[key]}
+
+
 class GNNAgent(BaseAgent):
     def __init__(
             self,
@@ -246,6 +262,8 @@ class GNNAgent(BaseAgent):
             self,
             observation: grid2op.Observation.BaseObservation,
             n_recommendations: int = 3,
+            max_per_substation: int = 0,
+            min_rho_gap: float = 0.0,
     ) -> List[dict]:
         """Propose several suitable actions for a single observation.
 
@@ -261,9 +279,18 @@ class GNNAgent(BaseAgent):
         Unlike :meth:`act_with_id` this method keeps no state between calls, so it is safe for
         serving independent requests.
 
+        Many actions of the ranking act on the same substation and change the grid in nearly
+        the same way, which makes them hard to tell apart. Candidates are therefore kept only
+        when they differ from the ones already kept: ``max_per_substation`` limits how many may
+        act on one substation, ``min_rho_gap`` the maximum line loading they must be apart, and
+        actions reaching exactly the same loading are dropped whatever the gap.
+
         Args:
             observation: Grid2Op observation.
             n_recommendations: Maximum number of actions to propose.
+            max_per_substation: Most actions proposed for one substation, 0 for no limit.
+            min_rho_gap: Simulated maximum line loading two proposals must be apart, 0 to keep
+                every candidate that is not an exact duplicate.
 
         Returns:
             A list of dicts, best first. Each holds the Grid2Op ``action``, its ``action_id`` and
@@ -288,11 +315,12 @@ class GNNAgent(BaseAgent):
         # Now, case dangerous:
         sorted_actions = self.__get_actions(obs=observation)[:self.max_action_sim]
 
-        suitable, improving = [], []
+        recommendations, improving = [], []
 
-        # Simulate the ranking in order until enough suitable actions are collected, or until
-        # there is nothing left to simulate. Candidates that help without reaching the
-        # threshold are kept, in case there are too few suitable ones.
+        # Simulate the ranking in order, keeping the suitable actions that are distinct enough
+        # from the ones already kept, until there are enough or nothing is left to simulate.
+        # Candidates that help without reaching the threshold are kept aside, in case there are
+        # too few suitable ones.
         for rank, idx in enumerate(sorted_actions):
             rho_max, valid_action = simulate_action(action_space=self.action_space, obs=observation,
                                                     action_vect=self.actions[idx, :],
@@ -308,37 +336,76 @@ class GNNAgent(BaseAgent):
             candidate = {"action_id": int(idx), "rank": rank, "simulated_rho": float(rho_max)}
 
             if rho_max <= self.best_action_threshold:
-                suitable.append(candidate)
-                if len(suitable) >= n_recommendations:
+                self.__keep(candidate, observation, recommendations,
+                            max_per_substation, min_rho_gap)
+                if len(recommendations) >= n_recommendations:
                     break
             elif rho_max < baseline:
                 improving.append(candidate)
 
-        logging.info(f"finished action search, {len(suitable)} suitable and {len(improving)} "
-                     f"improving candidate(s), total simulations so far: "
+        # Too few suitable actions: fill the remaining slots with the candidates that push rho
+        # down the most
+        for candidate in sorted(improving, key=lambda c: c["simulated_rho"]):
+            if len(recommendations) >= n_recommendations:
+                break
+            self.__keep(candidate, observation, recommendations,
+                        max_per_substation, min_rho_gap)
+
+        logging.info(f"finished action search, {len(recommendations)} distinct recommendation(s) "
+                     f"out of {len(improving)} improving candidate(s), total simulations so far: "
                      f"{self.total_simulation_times}")
-
-        # Suitable candidates keep the ranking order, so the agent's own choice stays first.
-        # Any remaining slots are filled with the candidates that push rho down the most.
-        chosen = suitable + sorted(improving, key=lambda c: c["simulated_rho"])
-
-        recommendations = []
-        for candidate in chosen[:n_recommendations]:
-            action = next(split_action_and_return(
-                observation, self.action_space, self.actions[candidate["action_id"], :]))
-            candidate["action"] = find_best_line_to_reconnect(obs=observation,
-                                                              original_action=action)
-            candidate["suitable"] = candidate["simulated_rho"] <= self.best_action_threshold
-            recommendations.append(candidate)
 
         if not recommendations:
             # Nothing helped at all, so fall back to do-nothing as act_with_id does.
             recommendations.append(
                 {"action": find_best_line_to_reconnect(obs=observation,
                                                        original_action=self.action_space({})),
-                 "action_id": -1, "rank": -1, "simulated_rho": baseline, "suitable": False})
+                 "action_id": -1, "rank": -1, "simulated_rho": baseline, "suitable": False,
+                 "substations": set()})
 
         return recommendations
+
+    def __keep(self, candidate, observation, kept, max_per_substation, min_rho_gap):
+        """Add a candidate to the kept recommendations when it is distinct enough
+
+        Two actions reaching the very same line loading change the grid in the same way, for
+        instance the two halves of one substation split, which are the same configuration.
+        Actions too close to a kept one, or on a substation already proposed often enough, are
+        left out as well.
+
+        Args:
+            candidate (dict): The candidate to keep, as built in recommend.
+            observation (): The observation the action is recommended for.
+            kept (list): The recommendations kept so far, appended to in place.
+            max_per_substation (int): Most actions proposed for one substation, 0 for no limit.
+            min_rho_gap (float): Loading two proposals must be apart, 0 for duplicates only.
+
+        Returns:
+            bool: Whether the candidate was kept.
+        """
+        rho = candidate["simulated_rho"]
+        for other in kept:
+            if round(other["simulated_rho"], 6) == round(rho, 6):
+                return False
+            if min_rho_gap and abs(other["simulated_rho"] - rho) < min_rho_gap:
+                return False
+
+        action = next(split_action_and_return(
+            observation, self.action_space, self.actions[candidate["action_id"], :]))
+        action = find_best_line_to_reconnect(obs=observation, original_action=action)
+        substations = substations_of(action)
+
+        if max_per_substation:
+            for substation in substations:
+                already = sum(1 for other in kept if substation in other["substations"])
+                if already >= max_per_substation:
+                    return False
+
+        candidate["action"] = action
+        candidate["substations"] = substations
+        candidate["suitable"] = rho <= self.best_action_threshold
+        kept.append(candidate)
+        return True
 
     def act( self, observation: grid2op.Observation.BaseObservation, reward: float, done: bool)\
             -> grid2op.Action.BaseAction:
